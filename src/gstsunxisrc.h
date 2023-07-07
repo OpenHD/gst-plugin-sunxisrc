@@ -31,6 +31,10 @@
 
 #include <gst/gst.h>
 #include <gst/video/video.h>
+#include <gst/base/gstpushsrc.h>
+
+#include <gst/video/gstvideometa.h>
+#include <gst/video/gstvideopool.h>
 
 #include "h264enc.h"
 
@@ -48,24 +52,30 @@ typedef struct _GstSunxiSrcClass	GstSunxiSrcClass;
 
 struct _GstSunxiSrc
 {
-	GstElement element;
+	GstPushSrc element;
 
-	GstPad *sinkpad, *srcpad;
-
+	GstPad *srcpad;
+    GstCaps *caps;
+    GstVideoInfo info;
+    GstClockTime duration;
+    
     gint32 bitrate;
 	gint32 pic_init_qp;
 	gint32 keyframe_interval;
 	gboolean always_copy;
-  
+    
 	int width;
 	int height;
 
+    gint32 fps_d;
+    gint32 fps_n;
+    
 	h264enc *enc;
 };
 
 struct _GstSunxiSrcClass 
 {
-	GstElementClass parent_class;
+	GstPushSrcClass parent_class;
 };
 
 GType gst_sunxisrc_get_type(void);

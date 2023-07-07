@@ -54,6 +54,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <gst/gst.h>
+#include <gst/video/video.h>
 
 #include "gstsunxisrc.h"
 
@@ -74,7 +75,7 @@ enum
 /* the capabilities of the inputs and outputs.
  *
  * describe the real formats here.
- */
+ 
 static GstStaticPadTemplate sink_factory = GST_STATIC_PAD_TEMPLATE("sink",
 	GST_PAD_SINK,
 	GST_PAD_ALWAYS,
@@ -86,6 +87,7 @@ static GstStaticPadTemplate sink_factory = GST_STATIC_PAD_TEMPLATE("sink",
 		"framerate = (fraction) [0/1, MAX] "
 	)
 );
+*/
 
 static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE("src",
 	GST_PAD_SRC,
@@ -98,38 +100,55 @@ static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE("src",
         "profile = (string) { high, main, baseline,  }")
     );
 
-G_DEFINE_TYPE(GstSunxiSrc, gst_sunxisrc, GST_TYPE_ELEMENT);
+#define gst_sunxisrc_parent_class parent_class
+G_DEFINE_TYPE_WITH_CODE(GstSunxiSrc, gst_sunxisrc, 
+    GST_TYPE_PUSH_SRC,
+    GST_DEBUG_CATEGORY_INIT (gst_sunxisrc_debug, "sunxisrc",
+      0, "Template sunxisrc"));
 
 static void gst_sunxisrc_set_property(GObject *object, guint prop_id, const GValue *value, GParamSpec *pspec);
 static void gst_sunxisrc_get_property(GObject *object, guint prop_id, GValue *value, GParamSpec *pspec);
 
-static gboolean gst_sunxisrc_set_caps(GstPad *pad, GstCaps *caps);
-static GstFlowReturn gst_sunxisrc_chain(GstPad *pad, GstObject *parent, GstBuffer *buf);
+//static gboolean gst_sunxisrc_set_caps(GstBaseSrc * bsrc, GstCaps * caps);
+//static GstCaps *gst_sunxisrc_get_caps (GstBaseSrc * bsrc, GstCaps * filter);
+static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf);
 
 static GstStateChangeReturn gst_sunxisrc_change_state(GstElement *element, GstStateChange transition);
+static gboolean gst_sunxisrc_start (GstBaseSrc * basesrc);
+static gboolean gst_sunxisrc_stop (GstBaseSrc * basesrc);
 
 /* initialize the sunxisrc's class */
 static void gst_sunxisrc_class_init(GstSunxiSrcClass *klass)
 {
 	GObjectClass *gobject_class;
 	GstElementClass *gstelement_class;
+    GstBaseSrcClass *gstbasesrc_class;
+    GstPushSrcClass *gstpushsrc_class;
 
+    printf("Entering %s\n",  __func__);
 	gobject_class = (GObjectClass *) klass;
 	gstelement_class = (GstElementClass *) klass;
+    gstbasesrc_class = (GstBaseSrcClass *) klass;
+    gstpushsrc_class = (GstPushSrcClass *) klass;
 	gst_element_class_set_details_simple(gstelement_class,
 		"sunxisrc_cs",
 		"Sunxi Camera src Encoder CS",
 		"Camera src Encoder Plugin for Sunxi hardware based on the Allwinner (closed source) library",
-		"Pete Allen <peter.allenm@gmail.com>, Enrico Butera <ebutera@users.berlios.de>, Kyle Hu <kyle.hu.gz@gmail.com>, George Talusan <george.talusan@gmail.com>");
+		"Pete Allen <peter.allenm@gmail.com>, Based on H264 encoder code by Enrico Butera <ebutera@users.berlios.de>, Kyle Hu <kyle.hu.gz@gmail.com>, George Talusan <george.talusan@gmail.com>");
 
 	gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&src_factory));
-	gst_element_class_add_pad_template(gstelement_class, gst_static_pad_template_get(&sink_factory));
   
 	gobject_class->set_property = gst_sunxisrc_set_property;
 	gobject_class->get_property = gst_sunxisrc_get_property;
 
 	gstelement_class->change_state = gst_sunxisrc_change_state;
 
+    //gstbasesrc_class->get_caps = gst_sunxisrc_get_caps;
+    //gstbasesrc_class->set_caps = gst_sunxisrc_set_caps;
+    gstbasesrc_class->start = gst_sunxisrc_start;
+    gstbasesrc_class->stop = gst_sunxisrc_stop;
+    gstpushsrc_class->create = gst_sunxisrc_create;
+    
     g_object_class_install_property (gobject_class, PROP_BITRATE,
 		g_param_spec_int ("bitrate", "BITRATE", "H264 target bitrate (kbits)",
 		1000, 64000, 5000, G_PARAM_READWRITE));
@@ -145,24 +164,9 @@ static void gst_sunxisrc_class_init(GstSunxiSrcClass *klass)
 	g_object_class_install_property (gobject_class, PROP_ALWAYS_COPY,
 		g_param_spec_boolean ("always-copy", "Always Copy", "Always Copy Buffers",
 		TRUE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+    printf("Done %s\n",  __func__);
 }
 
-static gboolean gst_sunxisrc_sink_event(GstPad *pad, GstObject *parent, GstEvent *event)
-{
-	gboolean ret;
-	GstCaps *caps;
-	switch (GST_EVENT_TYPE(event)) {
-	case GST_EVENT_CAPS:
-		gst_event_parse_caps(event, &caps);
-		ret = gst_sunxisrc_set_caps(pad, caps);
-		break;
-
-	default:
-		ret = gst_pad_event_default(pad, parent, event);
-		break;
-	}
-	return ret;
-}
 
 /* initialize the new element
  * instantiate pads and add them to element
@@ -171,27 +175,28 @@ static gboolean gst_sunxisrc_sink_event(GstPad *pad, GstObject *parent, GstEvent
  */
 static void gst_sunxisrc_init(GstSunxiSrc *filter)
 {
-	filter->sinkpad = gst_pad_new_from_static_template(&sink_factory, "sink");
-	gst_pad_set_event_function(filter->sinkpad, GST_DEBUG_FUNCPTR(gst_sunxisrc_sink_event));
-	gst_pad_set_chain_function(filter->sinkpad, GST_DEBUG_FUNCPTR(gst_sunxisrc_chain));
+	//gst_pad_set_chain_function(filter->sinkpad, GST_DEBUG_FUNCPTR(gst_sunxisrc_chain));
+    printf("Entering %s\n",  __func__);
+   gst_base_src_set_live (GST_BASE_SRC (filter), TRUE);
+   gst_base_src_set_format (GST_BASE_SRC (filter), GST_FORMAT_TIME);
+    
+	//filter->srcpad = gst_pad_new_from_static_template(&src_factory, "src");
+	//gst_pad_use_fixed_caps(filter->srcpad);
 
-	filter->srcpad = gst_pad_new_from_static_template(&src_factory, "src");
-	gst_pad_use_fixed_caps(filter->srcpad);
-
-	gst_element_add_pad(GST_ELEMENT(filter), filter->sinkpad);
-	gst_element_add_pad(GST_ELEMENT(filter), filter->srcpad);
+	//gst_element_add_pad(GST_ELEMENT(filter), filter->srcpad);
 
     
 	filter->bitrate = 0; // If bitrate is 0 we will be in qp mode
 	filter->pic_init_qp = 15;
 	filter->keyframe_interval = 0;
 	filter->always_copy = TRUE;
+    printf("Done %s\n",  __func__);
 }
 
 static void gst_sunxisrc_set_property(GObject *object, guint prop_id, const GValue *value, GParamSpec *pspec)
 {
 	GstSunxiSrc *filter = GST_SUNXISRC(object);
-
+    printf("Entering %s\n",  __func__);
 	switch (prop_id) {
     case PROP_BITRATE:
 		filter->bitrate = g_value_get_int(value) * BITRATE_MULT;
@@ -212,12 +217,13 @@ static void gst_sunxisrc_set_property(GObject *object, guint prop_id, const GVal
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
 		break;
 	}
+    printf("Done %s\n",  __func__);
 }
 
 static void gst_sunxisrc_get_property(GObject *object, guint prop_id, GValue *value, GParamSpec *pspec)
 {
 	GstSunxiSrc *filter = GST_SUNXISRC(object);
-
+    printf("Entering %s\n",  __func__);
 	switch (prop_id) {
     case PROP_BITRATE:
 		g_value_set_int(value, filter->bitrate / BITRATE_MULT);
@@ -238,71 +244,119 @@ static void gst_sunxisrc_get_property(GObject *object, guint prop_id, GValue *va
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
 		break;
 	}
+    printf("Done %s\n",  __func__);
+}
+
+#if 0
+static GstCaps *
+gst_sunxisrc_get_caps (GstBaseSrc * bsrc, GstCaps * filter)
+{
+  GstSunxiSrc *Sunxi;
+  GstCaps *caps;
+
+  Sunxi = GST_SUNXISRC(gst_pad_get_parent(bsrc));
+  if(Sunxi->caps != NULL)
+  {
+    caps = gst_caps_copy (Sunxi->caps);
+  }
+  else
+  {
+      caps = gst_pad_get_pad_template_caps (GST_BASE_SRC_PAD (Sunxi));
+  }
+  GST_DEBUG_OBJECT (Sunxi, "The caps before filtering are %" GST_PTR_FORMAT,
+      caps);
+
+  if (filter && caps) {
+    GstCaps *tmp = gst_caps_intersect (caps, filter);
+    gst_caps_unref (caps);
+    caps = tmp;
+  }
+
+  GST_DEBUG_OBJECT (Sunxi, "The caps after filtering are %" GST_PTR_FORMAT, caps);
+
+  return caps;
 }
 
 /* GstElement vmethod implementations */
 
 /* this function handles the link with other elements */
-static gboolean gst_sunxisrc_set_caps(GstPad *pad, GstCaps *caps)
+static gboolean gst_sunxisrc_set_caps(GstBaseSrc * bsrc, GstCaps * caps)
 {
 	GstSunxiSrc *filter;
-	GstPad *otherpad;
-	GstCaps *othercaps;
 	GstVideoInfo vinfo;
 
-	filter = GST_SUNXISRC(gst_pad_get_parent(pad));
-	otherpad = (pad == filter->srcpad) ? filter->sinkpad : filter->srcpad;
+	filter = GST_SUNXISRC(gst_pad_get_parent(bsrc));
 
-	if (pad == filter->sinkpad) {
-		int ret;
-		int fps_num, fps_den;
 
-		gst_video_info_from_caps(&vinfo, caps);
-		filter->width = vinfo.width;
-		filter->height = vinfo.height;
-		fps_num = vinfo.fps_n;
-		fps_den = vinfo.fps_d;
+    GstStructure *structure = gst_caps_get_structure (caps, 0);
+    if (!gst_structure_has_name (structure, "video/x-h264")) 
+    {
+        printf("Invalid GST_VIDEO_FORMAT\n");
+        goto unsupported_caps;
+    }
+    gst_video_info_from_caps(&vinfo, caps);
+    
+    if((vinfo.width != 1280) || (vinfo.height != 720))
+    {
+        printf("Invalid width/height %dx%d\n", vinfo.width, vinfo.height);
+        goto unsupported_caps;
+    }
+    filter->width = vinfo.width;
+    filter->height = vinfo.height;
+    
+    if(filter->caps)
+    {
+        gst_caps_unref(filter->caps);
+    }
+    filter->caps = gst_caps_copy(caps);
+    return TRUE;
 
-		othercaps = gst_caps_copy(gst_pad_get_pad_template_caps(filter->srcpad));
-		gst_caps_set_simple(othercaps,
-			"width", G_TYPE_INT, filter->width,
-			"height", G_TYPE_INT, filter->height,
-			"framerate", GST_TYPE_FRACTION, fps_num, fps_den,
-			"profile", G_TYPE_STRING, "main", NULL);
-
-		gst_object_unref(filter);
-		ret = gst_pad_set_caps(otherpad, othercaps);
-		gst_caps_unref(othercaps);
-
-		return ret;
-	}
-
-	gst_object_unref(filter);
-	return gst_pad_set_caps(otherpad, caps);
+    unsupported_caps:
+      GST_ERROR_OBJECT (bsrc, "Unsupported caps: %" GST_PTR_FORMAT, caps);
+      return FALSE;
 }
+#endif
 
-/* chain function
+#define mybuf_size  ((1280*720*3) / 2)
+unsigned char mybuf[mybuf_size] = {128};
+/* create function
  * this function does the actual processing
  */
-static GstFlowReturn gst_sunxisrc_chain(GstPad *pad, GstObject *parent, GstBuffer *buf)
+static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
 {
 	GstSunxiSrc *filter;
-	GstBuffer *outbuf;
-	GstMapInfo info;
+	GstBuffer *outbuf = NULL;
 	gsize len0, len1;
     gsize pps_sps_len = 0;
-    
-	filter = GST_SUNXISRC(GST_OBJECT_PARENT(pad));
-
-	if (!gst_buffer_map(buf, &info, GST_MAP_READ)) {
-		// TODO: needed?
-		GST_WARNING("Received empty buffer");
-		outbuf = gst_buffer_new();
-		GST_BUFFER_TIMESTAMP(outbuf) = GST_BUFFER_TIMESTAMP(buf);
-		return gst_pad_push(filter->srcpad, outbuf);
-	}
-
+   // printf("Entering %s\n",  __func__);
+	filter = GST_SUNXISRC(psrc);
+    /* Wait for a frame to come in */
+    /* Give MIPI a new buffer */
+    /* Start encode */
+    /* Create buffer for encode result */
+    /* Wait for encode to finish */
+    /* Free camera buffer */
+    /* Send H264 out */
+   
+#if 0    
+    if(!AllwinnerV4l2WaitForFrame())
+    {
+/*         GST_ELEMENT_ERROR (src, RESOURCE, FAILED, 
+        "SunxiSrc error calling AllwinnerV4l2WaitForFrame", (NULL)); */
+        return GST_FLOW_ERROR;
+    }
+    #endif
+    GST_CAT_DEBUG(gst_sunxisrc_debug, "received frame from allwinner");
 	if (!filter->enc) {
+        printf("\n**********Starting new encoder************\n");
+        filter->width = 1280;
+        filter->height = 720;
+        filter->bitrate = 8 * 1024 * 1024;
+        filter->keyframe_interval = 12;
+        filter->always_copy = 1;
+        filter->fps_d = 1;
+        filter->fps_n = 60;
+        
 		struct h264enc_params p = {
 			.width = filter->width,
 			.height = filter->height,
@@ -314,10 +368,12 @@ static GstFlowReturn gst_sunxisrc_chain(GstPad *pad, GstObject *parent, GstBuffe
 			.entropy_coding_mode = H264_EC_CABAC,
 			.qp = filter->pic_init_qp,
             .bitrate = filter->bitrate,
-            //.bitrate = 5 * 1024 * 1024,
+            //.bitrate = 8 * 1024 * 1024,
 			.keyframe_interval = filter->keyframe_interval
 		};
 
+        filter->duration = gst_util_uint64_scale_int (GST_SECOND, filter->fps_d,
+                        filter->fps_n);
 		filter->enc = h264enc_new(&p);
         
 		if (!filter->enc) {
@@ -337,9 +393,10 @@ static GstFlowReturn gst_sunxisrc_chain(GstPad *pad, GstObject *parent, GstBuffe
 	}
 
     
-	h264enc_set_input_buffer(filter->enc, info.data, info.size);
+	h264enc_set_input_buffer(filter->enc, mybuf, mybuf_size);
 
 	if (!h264enc_encode_picture(filter->enc)) {
+         GST_ERROR("cedar h264 encode failed\n");
 		return GST_FLOW_ERROR;
 	}
     
@@ -355,6 +412,7 @@ static GstFlowReturn gst_sunxisrc_chain(GstPad *pad, GstObject *parent, GstBuffe
     }
         
 	if (filter->always_copy) {
+        static int Tot = 0;
         gsize offset = 0;
         
 		outbuf = gst_buffer_new_and_alloc(len0 + len1 + pps_sps_len);
@@ -364,12 +422,18 @@ static GstFlowReturn gst_sunxisrc_chain(GstPad *pad, GstObject *parent, GstBuffe
             gst_buffer_fill(outbuf, 0, h264enc_get_intial_bytestream_buffer(filter->enc), pps_sps_len);
             offset += pps_sps_len;
         }
-        
+        Tot += len0 + len1;
+        if(Tot > 10000)
+        {
+            printf("got to %d bytes\n", Tot);
+            Tot = 0;
+        }
 		gst_buffer_fill(outbuf, offset, h264enc_get_bytestream_buffer(filter->enc, 0), len0);
         offset += len0;
         
         if(len1 > 0)
         {
+            printf("and %d bytes\n", len1);
             gst_buffer_fill(outbuf, offset, h264enc_get_bytestream_buffer(filter->enc, 1), len1);
         }
 	} else {
@@ -398,21 +462,65 @@ static GstFlowReturn gst_sunxisrc_chain(GstPad *pad, GstObject *parent, GstBuffe
             gst_buffer_fill(outbuf, len0, h264enc_get_bytestream_buffer(filter->enc, 1), len1);
         }
 	}
-	GST_BUFFER_TIMESTAMP(outbuf) = GST_BUFFER_TIMESTAMP(buf);
-    
     h264enc_done_outputbuffer(filter->enc);
-    
-	gst_buffer_unmap(buf, &info);
-	gst_buffer_unref(buf);
+    GstClock *clock = gst_element_get_clock (GST_ELEMENT (filter));
+    GstClockTime clock_time = gst_clock_get_time (clock);
+    GST_BUFFER_TIMESTAMP(outbuf) = GST_CLOCK_DIFF (gst_element_get_base_time (GST_ELEMENT (filter)), clock_time);
 
-	return gst_pad_push(filter->srcpad, outbuf);
+    /*
+    if (src->stop_requested) 
+    {
+        if (*buf != NULL) 
+        {
+             gst_buffer_unref (*buf);
+             *buf = NULL;
+        }
+        return GST_FLOW_FLUSHING;
+    }
+    */
+   GST_CAT_DEBUG(gst_sunxisrc_debug, "create method done");
+
+    *buf = outbuf;
+    
+    GST_BUFFER_DURATION (*buf) = filter->duration;
+   // printf("Done %s\n",  __func__);
+	return GST_FLOW_OK;
+}
+
+static gboolean
+gst_sunxisrc_start (GstBaseSrc * basesrc)
+{
+    GstSunxiSrc *src = GST_SUNXISRC(GST_OBJECT_PARENT(basesrc));
+    GST_LOG_OBJECT(src, "Creating SunxiSrc pipeline");
+    printf("Entering %s\n",  __func__);
+    /* V4l2 init */
+    
+    /* Some GST structrs to be filled out */
+    gst_video_info_init(&src->info);
+    gst_video_info_set_format(&src->info, GST_VIDEO_FORMAT_NV12, src->width, src->height);
+
+    src->caps = gst_video_info_to_caps (&src->info);
+    gst_base_src_start_complete(basesrc, GST_FLOW_OK);
+    printf("Done %s\n",  __func__);
+    return TRUE;
+}
+
+
+static gboolean
+gst_sunxisrc_stop (GstBaseSrc * basesrc)
+{
+    //GstSunxiSrc *src = GST_SUNXISRC(GST_OBJECT_PARENT(basesrc));
+  /* V4l2 shutdown */
+    printf("Entering %s\n",  __func__);
+    printf("Done %s\n",  __func__);
+  return TRUE;
 }
 
 static GstStateChangeReturn gst_sunxisrc_change_state(GstElement *element, GstStateChange transition)
 {
 	GstStateChangeReturn ret = GST_STATE_CHANGE_SUCCESS;
 	GstSunxiSrc *filter = GST_SUNXISRC(element);
-
+    printf("Entering %s\n",  __func__);
 	switch (transition) {
 	case GST_STATE_CHANGE_NULL_TO_READY:
 		break;
@@ -448,7 +556,7 @@ static GstStateChangeReturn gst_sunxisrc_change_state(GstElement *element, GstSt
 		// silence compiler warning...
 		break;
 	}
-
+    printf("Done %s\n",  __func__);
 	return ret;
 }
 
@@ -457,8 +565,9 @@ static gboolean sunxisrc_init(GstPlugin *sunxisrc)
 {
 	// debug category for fltering log messages
 	GST_DEBUG_CATEGORY_INIT(gst_sunxisrc_debug, "sunxisrc", 0, "Sunxi Camera src Encoder");
-
+    printf("Done %s\n",  __func__);
 	return gst_element_register(sunxisrc, "sunxisrc", GST_RANK_NONE, GST_TYPE_SUNXISRC);
+    printf("Done %s\n",  __func__);
 }
 
 /* PACKAGE: this is usually set by autotools depending on some _INIT macro
@@ -480,5 +589,5 @@ GST_PLUGIN_DEFINE (
 	VERSION,
 	"LGPL",
 	"Sunxi",
-	"https://github.com/peteallenm/gst-plugin-cedar-cs"
+	"https://github.com/peteallenm/gst-plugin-sunxisrc"
 )

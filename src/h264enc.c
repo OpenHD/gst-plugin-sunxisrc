@@ -336,7 +336,7 @@ h264enc *h264enc_new(const struct h264enc_params *p)
         MSG("MemAdapterGetOpsS failed\n");
         return false;
     }
-    
+
     
     CdcMemOpen(H264Enc.baseConfig.memops);
     H264Enc.baseConfig.nInputWidth= p->width;
@@ -362,15 +362,14 @@ h264enc *h264enc_new(const struct h264enc_params *p)
 
     unsigned int vbv_size = 12*1024*1024;
     VideoEncSetParameter(H264Enc.pVideoEnc, VENC_IndexParamH264Param, &(H264Enc.h264Param));
+    
     fprintf(stderr, "Pete bitrate=%d, qp=%d, keyframe=%d\n", H264Enc.h264Param.nBitrate, H264Enc.h264Param.sQPRange.nMaxqp, H264Enc.h264Param.nMaxKeyInterval);
+    
     VideoEncSetParameter(H264Enc.pVideoEnc, VENC_IndexParamSetVbvSize, &vbv_size);
     
     VideoEncInit(H264Enc.pVideoEnc, &(H264Enc.baseConfig));
 
     VideoEncGetParameter(H264Enc.pVideoEnc, VENC_IndexParamH264SPSPPS, &(H264Enc.sps_pps_data));
-    
-    // FIXME - we need to do something with this
-    //fwrite(sps_pps_data.pBuffer, 1, sps_pps_data.nLength, out_file);
     
     AllocInputBuffer(H264Enc.pVideoEnc, &(H264Enc.bufferParam));
     PMSG("h264enc_new() complete");
@@ -608,6 +607,7 @@ int h264enc_encode_picture(h264enc *c)
     if(result == -1)
     {
         printf("h264enc_encode_picture() Could not get result buffer\n");
+        return 0;
     }
     PMSG("h264enc_encode_picture() complete");
     #ifdef DO_LATENCY_TEST
