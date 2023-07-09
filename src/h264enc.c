@@ -349,7 +349,7 @@ h264enc *h264enc_new(const struct h264enc_params *p)
     
     H264Enc.bufferParam.nSizeY = H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight;
     H264Enc.bufferParam.nSizeC = H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight/2;
-    H264Enc.bufferParam.nBufferNum = 1;
+    H264Enc.bufferParam.nBufferNum = 4; // DQ_BUF requires four buffers
     
     H264Enc.pVideoEnc = VideoEncCreate(VENC_CODEC_H264);
     
@@ -518,6 +518,8 @@ void h264enc_set_input_buffer(h264enc *c, void *Dat, size_t Len)
     c->inputBuffer.sCropInfo.nTop  =  0;
     c->inputBuffer.sCropInfo.nWidth  =  0;
     c->inputBuffer.sCropInfo.nHeight =  0;
+    
+    //printf("Inp: nFlag=%d, nID=%d ispPicVar=%d, ispPicVarChroma=%d, bUseInputBufferRoi, bAllocMemSelf=%d, nShareBufFd=%d, envLV=%d\n", c->inputBuffer.nFlag, c->inputBuffer.nID, c->inputBuffer.ispPicVar, c->inputBuffer.ispPicVarChroma, c->inputBuffer.bUseInputBufferRoi, c->inputBuffer.bAllocMemSelf, c->inputBuffer.nShareBufFd, c->inputBuffer.envLV);
     FlushCacheAllocInputBuffer(c->pVideoEnc, &c->inputBuffer);
     c->pts += 1000/c->h264Param.nFramerate;
     c->inputBuffer.nPts = c->pts;

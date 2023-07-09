@@ -53,10 +53,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
 
 #include "gstsunxisrc.h"
+#include "AllwinnerV4L2.h"
 
 GST_DEBUG_CATEGORY_STATIC(gst_sunxisrc_debug);
 #define GST_CAT_DEFAULT gst_sunxisrc_debug
@@ -337,16 +340,7 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
     /* Wait for encode to finish */
     /* Free camera buffer */
     /* Send H264 out */
-   
-#if 0    
-    if(!AllwinnerV4l2WaitForFrame())
-    {
-/*         GST_ELEMENT_ERROR (src, RESOURCE, FAILED, 
-        "SunxiSrc error calling AllwinnerV4l2WaitForFrame", (NULL)); */
-        return GST_FLOW_ERROR;
-    }
-    #endif
-    GST_CAT_DEBUG(gst_sunxisrc_debug, "received frame from allwinner");
+
 	if (!filter->enc) {
         printf("\n**********Starting new encoder************\n");
         filter->width = 1280;
@@ -391,9 +385,17 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
         else
             GST_ERROR("Pete: No initial bytestream\n");
 	}
-
+    uint8_t *CamBuf = NULL;
+    if(!CamReadFrame(&CamBuf))
+    {
+/*         GST_ELEMENT_ERROR (src, RESOURCE, FAILED, 
+        "SunxiSrc error calling AllwinnerV4l2WaitForFrame", (NULL)); */
+        return GST_FLOW_ERROR;
+    }
     
-	h264enc_set_input_buffer(filter->enc, mybuf, mybuf_size);
+    GST_CAT_DEBUG(gst_sunxisrc_debug, "received frame from allwinner");
+    
+	h264enc_set_input_buffer(filter->enc, CamBuf, mybuf_size);
 
 	if (!h264enc_encode_picture(filter->enc)) {
          GST_ERROR("cedar h264 encode failed\n");
@@ -411,8 +413,7 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
         pps_sps_len = h264enc_get_initial_bytestream_length(filter->enc);
     }
         
-	if (filter->always_copy) {
-        static int Tot = 0;
+	if (filter->always_copy) {=
         gsize offset = 0;
         
 		outbuf = gst_buffer_new_and_alloc(len0 + len1 + pps_sps_len);
@@ -421,12 +422,6 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
         {
             gst_buffer_fill(outbuf, 0, h264enc_get_intial_bytestream_buffer(filter->enc), pps_sps_len);
             offset += pps_sps_len;
-        }
-        Tot += len0 + len1;
-        if(Tot > 10000)
-        {
-            printf("got to %d bytes\n", Tot);
-            Tot = 0;
         }
 		gst_buffer_fill(outbuf, offset, h264enc_get_bytestream_buffer(filter->enc, 0), len0);
         offset += len0;
@@ -494,6 +489,11 @@ gst_sunxisrc_start (GstBaseSrc * basesrc)
     GST_LOG_OBJECT(src, "Creating SunxiSrc pipeline");
     printf("Entering %s\n",  __func__);
     /* V4l2 init */
+    if(!CamOpen())
+    {
+        printf("Cannot open camera, fail\n");
+        return FALSE;
+    }
     
     /* Some GST structrs to be filled out */
     gst_video_info_init(&src->info);
@@ -512,6 +512,9 @@ gst_sunxisrc_stop (GstBaseSrc * basesrc)
     //GstSunxiSrc *src = GST_SUNXISRC(GST_OBJECT_PARENT(basesrc));
   /* V4l2 shutdown */
     printf("Entering %s\n",  __func__);
+    
+    CamClose();
+    
     printf("Done %s\n",  __func__);
   return TRUE;
 }
@@ -529,6 +532,11 @@ static GstStateChangeReturn gst_sunxisrc_change_state(GstElement *element, GstSt
 		break;
 
 	case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
+        printf("Starting camera capture\n");
+        if(!CamStartCapture())
+        {
+            printf("Could not start camera capture\n");
+        }
 		break;
 
 	default:
@@ -542,6 +550,7 @@ static GstStateChangeReturn gst_sunxisrc_change_state(GstElement *element, GstSt
 
 	switch (transition) {
 	case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
+        CamStopCapture();
 		break;
 
 	case GST_STATE_CHANGE_PAUSED_TO_READY:

@@ -134,7 +134,8 @@ LTLIBRARIES = $(plugin_LTLIBRARIES)
 am__DEPENDENCIES_1 =
 libgstsunxisrc_la_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_libgstsunxisrc_la_OBJECTS = libgstsunxisrc_la-gstsunxisrc.lo \
-	libgstsunxisrc_la-h264enc.lo
+	libgstsunxisrc_la-h264enc.lo \
+	libgstsunxisrc_la-AllwinnerV4L2.lo
 libgstsunxisrc_la_OBJECTS = $(am_libgstsunxisrc_la_OBJECTS)
 AM_V_lt = $(am__v_lt_$(V))
 am__v_lt_ = $(am__v_lt_$(AM_DEFAULT_VERBOSITY))
@@ -159,7 +160,8 @@ am__v_at_1 =
 DEFAULT_INCLUDES = -I. -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
-am__depfiles_remade = ./$(DEPDIR)/libgstsunxisrc_la-gstsunxisrc.Plo \
+am__depfiles_remade = ./$(DEPDIR)/libgstsunxisrc_la-AllwinnerV4L2.Plo \
+	./$(DEPDIR)/libgstsunxisrc_la-gstsunxisrc.Plo \
 	./$(DEPDIR)/libgstsunxisrc_la-h264enc.Plo
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
@@ -338,7 +340,7 @@ plugin_LTLIBRARIES = libgstsunxisrc.la
 
 # sources used to compile this plug-in
 libgstsunxisrc_la_SOURCES = gstsunxisrc.c gstsunxisrc.h \
-	h264enc.c h264enc.h
+	h264enc.c h264enc.h AllwinnerV4L2.c AllwinnerV4L2.h
 
 
 # compiler and linker flags used to compile this plugin, set in configure.ac
@@ -427,6 +429,7 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
+include ./$(DEPDIR)/libgstsunxisrc_la-AllwinnerV4L2.Plo # am--include-marker
 include ./$(DEPDIR)/libgstsunxisrc_la-gstsunxisrc.Plo # am--include-marker
 include ./$(DEPDIR)/libgstsunxisrc_la-h264enc.Plo # am--include-marker
 
@@ -470,6 +473,13 @@ libgstsunxisrc_la-h264enc.lo: h264enc.c
 #	$(AM_V_CC)source='h264enc.c' object='libgstsunxisrc_la-h264enc.lo' libtool=yes \
 #	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) \
 #	$(AM_V_CC_no)$(LIBTOOL) $(AM_V_lt) --tag=CC $(libgstsunxisrc_la_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libgstsunxisrc_la_CFLAGS) $(CFLAGS) -c -o libgstsunxisrc_la-h264enc.lo `test -f 'h264enc.c' || echo '$(srcdir)/'`h264enc.c
+
+libgstsunxisrc_la-AllwinnerV4L2.lo: AllwinnerV4L2.c
+	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(libgstsunxisrc_la_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libgstsunxisrc_la_CFLAGS) $(CFLAGS) -MT libgstsunxisrc_la-AllwinnerV4L2.lo -MD -MP -MF $(DEPDIR)/libgstsunxisrc_la-AllwinnerV4L2.Tpo -c -o libgstsunxisrc_la-AllwinnerV4L2.lo `test -f 'AllwinnerV4L2.c' || echo '$(srcdir)/'`AllwinnerV4L2.c
+	$(AM_V_at)$(am__mv) $(DEPDIR)/libgstsunxisrc_la-AllwinnerV4L2.Tpo $(DEPDIR)/libgstsunxisrc_la-AllwinnerV4L2.Plo
+#	$(AM_V_CC)source='AllwinnerV4L2.c' object='libgstsunxisrc_la-AllwinnerV4L2.lo' libtool=yes \
+#	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) \
+#	$(AM_V_CC_no)$(LIBTOOL) $(AM_V_lt) --tag=CC $(libgstsunxisrc_la_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libgstsunxisrc_la_CFLAGS) $(CFLAGS) -c -o libgstsunxisrc_la-AllwinnerV4L2.lo `test -f 'AllwinnerV4L2.c' || echo '$(srcdir)/'`AllwinnerV4L2.c
 
 mostlyclean-libtool:
 	-rm -f *.lo
@@ -605,7 +615,8 @@ clean-am: clean-generic clean-libtool clean-pluginLTLIBRARIES \
 	mostlyclean-am
 
 distclean: distclean-am
-		-rm -f ./$(DEPDIR)/libgstsunxisrc_la-gstsunxisrc.Plo
+		-rm -f ./$(DEPDIR)/libgstsunxisrc_la-AllwinnerV4L2.Plo
+	-rm -f ./$(DEPDIR)/libgstsunxisrc_la-gstsunxisrc.Plo
 	-rm -f ./$(DEPDIR)/libgstsunxisrc_la-h264enc.Plo
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
@@ -652,7 +663,8 @@ install-ps-am:
 installcheck-am:
 
 maintainer-clean: maintainer-clean-am
-		-rm -f ./$(DEPDIR)/libgstsunxisrc_la-gstsunxisrc.Plo
+		-rm -f ./$(DEPDIR)/libgstsunxisrc_la-AllwinnerV4L2.Plo
+	-rm -f ./$(DEPDIR)/libgstsunxisrc_la-gstsunxisrc.Plo
 	-rm -f ./$(DEPDIR)/libgstsunxisrc_la-h264enc.Plo
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
