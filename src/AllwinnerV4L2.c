@@ -23,6 +23,11 @@ static int              fd = -1;
 static struct buffer          *buffers;
 static unsigned int     n_buffers;
 
+static struct v4l2_buffer CInputBuffer;
+static bool BufNeedsQueueing = false;
+
+#define NUM_BUFFERS 4
+unsigned char *buffer_pointers[NUM_BUFFERS] = {0};
  
 
 static int xioctl(int fh, int request, void *arg)
@@ -37,18 +42,16 @@ static int xioctl(int fh, int request, void *arg)
     return r;
 }
 
-
 static bool read_frame(uint8_t **Buf)
 {
-    struct v4l2_buffer buf;
-    CLEAR(buf);
+    CLEAR(CInputBuffer);
     
     *Buf = NULL;
     
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_MMAP;
+    CInputBuffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    CInputBuffer.memory = V4L2_MEMORY_USERPTR;
 
-    if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) 
+    if (-1 == xioctl(fd, VIDIOC_DQBUF, &CInputBuffer)) 
     {
         switch (errno) 
         {
@@ -65,21 +68,19 @@ static bool read_frame(uint8_t **Buf)
                 return false;
         }
     }
+    #if 0
+    for (i = 0; i < n_buffers; ++i)
+            if (buf.m.userptr == (unsigned long)buffers[i].start
+                && buf.length == buffers[i].length)
+                    break;
 
-    if(buf.index >= n_buffers)
-    {
-        printf("%s() Error: buf greater than num buffers\n", __func__);
-        return false;
-    }
+    assert(i < n_buffers);
+#endif
+    *Buf = (unsigned char *)CInputBuffer.m.userptr;
 
-
-    if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
-    {
-         printf("%s() Error: VIDIOC_QBUF\n", __func__);
-        return false;
-    }
-    *Buf = buffers[buf.index].start;
-
+    //printf("Done, %x,%x,%x,%x\n", *((unsigned int *)buf.m.userptr), *(((unsigned int *)buf.m.userptr) + 1), *(((unsigned int *)buf.m.userptr) + 2), *(((unsigned int *)buf.m.userptr) + 3));
+    BufNeedsQueueing = true;
+    
     return true;
 }
 
@@ -104,9 +105,10 @@ bool CamStartCapture(void)
 
         CLEAR(buf);
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
+        buf.memory = V4L2_MEMORY_USERPTR;
         buf.index = i;
-
+        buf.m.userptr = (unsigned long)buffers[i].start;
+        buf.length = buffers[i].length;
         if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
         {
             printf("%s() Error: VIDIOC_QBUF\n", __func__);
@@ -125,6 +127,7 @@ bool CamStartCapture(void)
 
 static void uninit_camera(void)
 {
+    #if 0
     unsigned int i;
 
     for (i = 0; i < n_buffers; ++i)
@@ -134,9 +137,241 @@ static void uninit_camera(void)
             printf("%s() Error: munmap\n", __func__);
         }
     }
+    #endif
+    
     free(buffers);
 }
 
+static bool init_userp(unsigned int buffer_size)
+{
+    struct v4l2_requestbuffers req;
+    
+    CLEAR(req);
+
+    req.count  = 4;
+    req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory = V4L2_MEMORY_USERPTR;
+
+    if (-1 == xioctl(fd, VIDIOC_REQBUFS, &req)) 
+    {
+        if (EINVAL == errno) 
+        {
+            fprintf(stderr, "%s does not support "
+                     "user pointer i/o\n", dev_name);
+            return false;
+        } 
+        else 
+        {
+            printf("Error VIDIOC_REQBUFS");
+            return false;
+        }
+    }
+
+    buffers = calloc(4, sizeof(*buffers));
+
+    if (!buffers) {
+        fprintf(stderr, "Out of memory\n");
+        return false;
+    }
+
+    for (n_buffers = 0; n_buffers < 4; ++n_buffers) {
+        buffers[n_buffers].length = buffer_size;
+        //buffers[n_buffers].start = malloc(buffer_size);
+        printf("Buffer %d set to %p\n", n_buffers, buffer_pointers[n_buffers]);
+        buffers[n_buffers].start = buffer_pointers[n_buffers];
+
+        if (!buffers[n_buffers].start) 
+        {
+            fprintf(stderr, "Out of memory\n");
+            return false;
+        }
+    }
+    return true;
+}
+
+
+static bool init_camera(void)
+{
+    struct v4l2_capability cap;
+    struct v4l2_cropcap cropcap;
+    struct v4l2_crop crop;
+    struct v4l2_format fmt;
+    unsigned int min;
+
+    if (-1 == xioctl(fd, VIDIOC_QUERYCAP, &cap)) 
+    {
+        if (EINVAL == errno) 
+        {
+            printf("%s() Error: %s is no V4L2 device\n", __func__, dev_name);
+            return false;
+        } 
+        else 
+        {
+            printf("%s()Error:VIDIOC_QUERYCAP \n", __func__);
+            return false;
+        }
+    }
+
+    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) 
+    {
+        printf("%s() Error:%s is no video capture device \n", __func__, dev_name);
+        return false;
+    }
+
+    if (!(cap.capabilities & V4L2_CAP_STREAMING)) 
+    {
+         printf("%s() Error: %s does not support streaming i/o\n", __func__, dev_name);
+        return false;
+    }
+
+    /* Select video input, video standard and tune here. */
+    CLEAR(cropcap);
+
+    cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    if (0 == xioctl(fd, VIDIOC_CROPCAP, &cropcap)) 
+    {
+        crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        crop.c = cropcap.defrect; /* reset to default */
+
+        xioctl(fd, VIDIOC_S_CROP, &crop);
+    } 
+    
+    CLEAR(fmt);
+
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    fmt.fmt.pix.width       = 1280; //replace
+    fmt.fmt.pix.height      = 720; //replace
+    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12; //replace
+    //fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV; //replace
+    
+    fmt.fmt.pix.field       = V4L2_FIELD_ANY;
+
+    if (-1 == xioctl(fd, VIDIOC_S_FMT, &fmt))
+    {
+         printf("%s() Error in VIDIOC_S_FMT\n", __func__);
+        return false;
+    }
+
+    /* Buggy driver paranoia. */
+    min = (fmt.fmt.pix.width * 2);
+    if (fmt.fmt.pix.bytesperline < min)
+    {
+        fmt.fmt.pix.bytesperline = min;
+    }
+    min = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height;
+    if (fmt.fmt.pix.sizeimage < min)
+    {
+        fmt.fmt.pix.sizeimage = min;
+    }
+    printf("Init buffer of %d bytes, expecting %d\n", fmt.fmt.pix.sizeimage, 1280 * 720 * 2);
+    return  init_userp(fmt.fmt.pix.sizeimage); //init_mmap();
+}
+
+static void close_device(void)
+{
+    if (-1 == close(fd))
+    {
+         printf("%s() could not close\n", __func__);
+    }
+    fd = -1;
+}
+
+static bool open_device(void)
+{
+    struct stat st;
+
+    if (-1 == stat(dev_name, &st)) 
+    {
+        printf("%s() Cannot identify '%s': %d, %s\n",
+                 __func__, dev_name, errno, strerror(errno));
+        return false;
+    }
+
+    if (!S_ISCHR(st.st_mode)) 
+    {
+        printf("%s() %s is no device\n", __func__, dev_name);
+        return false;
+    }
+
+    fd = open(dev_name, O_RDWR /* required */ | O_NONBLOCK, 0);
+
+    if (-1 == fd) 
+    {
+        printf("%s() Cannot open '%s': %d, %s\n",
+                 __func__, dev_name, errno, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+bool CamReadFrame(uint8_t **Buf)
+{
+    fd_set fds;
+    struct timeval tv;
+    int r;
+    
+    *Buf = NULL;
+    
+    if(true == BufNeedsQueueing)
+    {        
+        if (-1 == xioctl(fd, VIDIOC_QBUF, &CInputBuffer))
+        {
+            printf("Error VIDIOC_QBUF");
+            return false;
+        }
+        BufNeedsQueueing = false;
+    }
+    
+    FD_ZERO(&fds);
+    FD_SET(fd, &fds);
+
+    /* Timeout. */
+    tv.tv_sec = 0;
+    tv.tv_usec = 100 * 1000;
+
+    r = select(fd + 1, &fds, NULL, NULL, &tv);
+
+    if ((-1 == r) && (EINTR != errno)) 
+    {
+        printf("%s() Error: select\n", __func__);
+        return false;
+    }
+
+    if (0 == r) 
+    {
+        printf("%s() Error: select timeout\n", __func__);
+        return false;
+    }
+
+    return read_frame(Buf);
+}
+        
+void CamClose(void)
+{
+    uninit_camera();
+    close_device();
+}
+
+bool CamOpen(void)
+{
+    printf("%s()\n", __func__);
+    if(!open_device())
+    {
+        printf("%s() Could not open device\n", __func__);
+		return false;
+    }
+    if(!init_camera())
+    {
+        printf("%s() Could not init device\n", __func__);
+		return false;
+    }
+    printf("%s(): Camera opened succesfully\n", __func__);
+    return true;
+}
+
+#if 0
 
 static bool init_mmap(void)
 {
@@ -206,172 +441,4 @@ static bool init_mmap(void)
     return true;
 }
 
-static bool init_camera(void)
-{
-    struct v4l2_capability cap;
-    struct v4l2_cropcap cropcap;
-    struct v4l2_crop crop;
-    struct v4l2_format fmt;
-    unsigned int min;
-
-    if (-1 == xioctl(fd, VIDIOC_QUERYCAP, &cap)) 
-    {
-        if (EINVAL == errno) 
-        {
-            printf("%s() Error: %s is no V4L2 device\n", __func__, dev_name);
-            return false;
-        } 
-        else 
-        {
-            printf("%s()Error:VIDIOC_QUERYCAP \n", __func__);
-            return false;
-        }
-    }
-
-    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) 
-    {
-        printf("%s() Error:%s is no video capture device \n", __func__, dev_name);
-        return false;
-    }
-
-    if (!(cap.capabilities & V4L2_CAP_STREAMING)) 
-    {
-         printf("%s() Error: %s does not support streaming i/o\n", __func__, dev_name);
-        return false;
-    }
-
-    /* Select video input, video standard and tune here. */
-    CLEAR(cropcap);
-
-    cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-
-    if (0 == xioctl(fd, VIDIOC_CROPCAP, &cropcap)) 
-    {
-        crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        crop.c = cropcap.defrect; /* reset to default */
-
-        xioctl(fd, VIDIOC_S_CROP, &crop);
-    } 
-    
-    CLEAR(fmt);
-
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-
-    fmt.fmt.pix.width       = 1280; //replace
-    fmt.fmt.pix.height      = 720; //replace
-    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12; //replace
-    fmt.fmt.pix.field       = V4L2_FIELD_ANY;
-
-    if (-1 == xioctl(fd, VIDIOC_S_FMT, &fmt))
-    {
-         printf("%s() Error in VIDIOC_S_FMT\n", __func__);
-        return false;
-    }
-
-    /* Buggy driver paranoia. */
-    min = fmt.fmt.pix.width * 2;
-    if (fmt.fmt.pix.bytesperline < min)
-    {
-        fmt.fmt.pix.bytesperline = min;
-    }
-    min = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height;
-    if (fmt.fmt.pix.sizeimage < min)
-    {
-        fmt.fmt.pix.sizeimage = min;
-    }
-
-    return  init_mmap();
-}
-
-static void close_device(void)
-{
-    if (-1 == close(fd))
-    {
-         printf("%s() could not close\n", __func__);
-    }
-    fd = -1;
-}
-
-static bool open_device(void)
-{
-    struct stat st;
-
-    if (-1 == stat(dev_name, &st)) 
-    {
-        printf("%s() Cannot identify '%s': %d, %s\n",
-                 __func__, dev_name, errno, strerror(errno));
-        return false;
-    }
-
-    if (!S_ISCHR(st.st_mode)) 
-    {
-        printf("%s() %s is no device\n", __func__, dev_name);
-        return false;
-    }
-
-    fd = open(dev_name, O_RDWR /* required */ | O_NONBLOCK, 0);
-
-    if (-1 == fd) 
-    {
-        printf("%s() Cannot open '%s': %d, %s\n",
-                 __func__, dev_name, errno, strerror(errno));
-        return false;
-    }
-    return true;
-}
-
-bool CamReadFrame(uint8_t **Buf)
-{
-    fd_set fds;
-    struct timeval tv;
-    int r;
-    
-    *Buf = NULL;
-    
-    FD_ZERO(&fds);
-    FD_SET(fd, &fds);
-
-    /* Timeout. */
-    tv.tv_sec = 0;
-    tv.tv_usec = 100 * 1000;
-
-    r = select(fd + 1, &fds, NULL, NULL, &tv);
-
-    if ((-1 == r) && (EINTR != errno)) 
-    {
-        printf("%s() Error: select\n", __func__);
-        return false;
-    }
-
-    if (0 == r) 
-    {
-        printf("%s() Error: select timeout\n", __func__);
-        return false;
-    }
-
-    return read_frame(Buf);
-}
-        
-void CamClose(void)
-{
-    uninit_camera();
-    close_device();
-}
-
-bool CamOpen(void)
-{
-    printf("%s()\n", __func__);
-    if(!open_device())
-    {
-        printf("%s() Could not open device\n", __func__);
-		return false;
-    }
-    if(!init_camera())
-    {
-        printf("%s() Could not init device\n", __func__);
-		return false;
-    }
-    printf("%s(): Camera opened succesfully\n", __func__);
-    return true;
-}
-
+#endif

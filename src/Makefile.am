@@ -4,7 +4,7 @@ plugin_LTLIBRARIES = libgstsunxisrc.la
 
 # sources used to compile this plug-in
 libgstsunxisrc_la_SOURCES = gstsunxisrc.c gstsunxisrc.h \
-	h264enc.c h264enc.h AllwinnerV4L2.c AllwinnerV4L2.h
+	h264enc.c h264enc.h AllwinnerV4L2.c AllwinnerV4L2.h 
 
 # compiler and linker flags used to compile this plugin, set in configure.ac
 libgstsunxisrc_la_CFLAGS = $(GST_CFLAGS)

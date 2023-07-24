@@ -29,7 +29,10 @@
 #include <math.h>
 #include <stdbool.h>
 #include <time.h>
+#include <unistd.h>
 #include "h264enc.h"
+#include "virt2phys.h"
+
 
 // #define DO_LATENCY_TEST
  
@@ -39,6 +42,8 @@
 #define ROI_NUM 4
 #define ALIGN_XXB(y, x) (((x) + ((y)-1)) & ~((y)-1))
 
+
+#define NUM_BUFFERS 4
 typedef struct {
     unsigned int width;
     unsigned int height;
@@ -67,11 +72,14 @@ struct h264enc_internal {
     VencBaseConfig baseConfig;
     VencAllocateBufferParam bufferParam;
     VideoEncoder* pVideoEnc;
-    VencInputBuffer inputBuffer;
+    VencInputBuffer inputBuffers[NUM_BUFFERS];
     VencOutputBuffer outputBuffer;
+    
     long long pts;
 };
 
+
+int UsedBuf = -1;
 
 #ifdef DO_LATENCY_TEST
 long long GetNowUs()
@@ -242,10 +250,10 @@ void initH264ParamsDefault(h264enc *h264_func)
 
     //init h264Param
     h264_func->h264Param.bEntropyCodingCABAC = 1;
-    h264_func->h264Param.nBitrate = 5 * 1024 * 1024; //FIXME
+    h264_func->h264Param.nBitrate = 8 * 1024 * 1024; 
     h264_func->h264Param.nFramerate = 60;
     h264_func->h264Param.nCodingMode = VENC_FRAME_CODING;
-    h264_func->h264Param.nMaxKeyInterval = 16; // FIXME
+    h264_func->h264Param.nMaxKeyInterval = 16; 
     h264_func->h264Param.sProfileLevel.nProfile = VENC_H264ProfileHigh; //VENC_H264ProfileHigh; / VENC_H264ProfileBaseline
     h264_func->h264Param.sProfileLevel.nLevel = VENC_H264Level41; // VENC_H264Level51;
     h264_func->h264Param.sQPRange.nMinqp = 10;
@@ -312,7 +320,9 @@ void h264enc_free(h264enc *c)
     }
     releaseMb(c);
 }
-    
+
+extern unsigned char *buffer_pointers[4] ;
+
 h264enc *h264enc_new(const struct h264enc_params *p)
 {
     bool result;
@@ -346,14 +356,17 @@ h264enc *h264enc_new(const struct h264enc_params *p)
     H264Enc.baseConfig.nDstHeight = p->height;
     
     H264Enc.baseConfig.eInputFormat = VENC_PIXEL_YUV420SP;
+    //H264Enc.baseConfig.eInputFormat = VENC_PIXEL_YUYV422;
     
-    H264Enc.bufferParam.nSizeY = H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight;
-    H264Enc.bufferParam.nSizeC = H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight/2;
+    H264Enc.bufferParam.nSizeY = H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight * 2;
+    H264Enc.bufferParam.nSizeC = 0; //H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight/2;
+    
     H264Enc.bufferParam.nBufferNum = 4; // DQ_BUF requires four buffers
     
     H264Enc.pVideoEnc = VideoEncCreate(VENC_CODEC_H264);
     
     result = initH264Func(&H264Enc, p->width, p->height);
+
     if(result)
     {
         MSG("initH264Func error, return \n");
@@ -372,6 +385,16 @@ h264enc *h264enc_new(const struct h264enc_params *p)
     VideoEncGetParameter(H264Enc.pVideoEnc, VENC_IndexParamH264SPSPPS, &(H264Enc.sps_pps_data));
     
     AllocInputBuffer(H264Enc.pVideoEnc, &(H264Enc.bufferParam));
+    
+    for(int i = 0 ; i < 4; i ++)
+    {
+        GetOneAllocInputBuffer(H264Enc.pVideoEnc, &(H264Enc.inputBuffers[i]));
+        buffer_pointers[i] = H264Enc.inputBuffers[i].pAddrVirY;
+        printf("Set buf %d to %p\n", i, buffer_pointers[i]);
+        /* Don't return the buffer, we want them all queued ready for the camera to use */
+        //ReturnOneAllocInputBuffer(H264Enc.pVideoEnc, &H264Enc.inputBuffer);
+    }
+    
     PMSG("h264enc_new() complete");
 	return &H264Enc;
 }
@@ -381,12 +404,184 @@ int h264enc_get_initial_bytestream_length(h264enc *c)
     return c->sps_pps_data.nLength;
 }
 
+void my_copy(volatile unsigned char *dst, volatile unsigned char *src, int sz)
+{
+    if (sz & 63) {
+        sz = (sz & -64) + 64;
+    }
+    asm volatile (
+        "NEONCopyPLD:                          \n"
+        "    VLDM %[src]!,{d0-d7}                 \n"
+        "    VSTM %[dst]!,{d0-d7}                 \n"
+        "    SUBS %[sz],%[sz],#0x40                 \n"
+        "    BGT NEONCopyPLD                  \n"
+        : [dst]"+r"(dst), [src]"+r"(src), [sz]"+r"(sz) : : "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "cc", "memory");
+}
 
 void *h264enc_get_intial_bytestream_buffer(h264enc *c)
 {
    // fprintf(stderr, "Returning initial buffer of %d bytes\n", c->sps_pps_data.nLength);
     return c->sps_pps_data.pBuffer;
 }
+
+void h264enc_set_input_buffer(h264enc *c, void *Dat, size_t Len)
+{
+    PMSG("h264enc_set_input_buffer()");
+
+    #ifdef DO_LATENCY_TEST
+    LEDFrame = DetectLEDFrame(Dat, Len);
+    
+    if(true == LEDFrame)
+    {
+        FrameCTime = 0;
+        FrameTimes[FrameCTime ++] = GetNowUs();
+        SetLED(0, true);
+    }
+    #endif
+    //GetOneAllocInputBuffer(c->pVideoEnc, &(c->inputBuffer));
+    
+    bool FoundBuf = false;
+    int CTab = 0;
+    while((false == FoundBuf) && (CTab < NUM_BUFFERS))
+    {
+        if(buffer_pointers[CTab] == Dat)
+        {
+            FoundBuf = true;
+        }
+        else
+        {
+            CTab ++;
+        }
+    }
+    
+    if(false == FoundBuf)
+    {
+        printf("Could not find buffer %p\n", Dat);
+        return;
+    }
+    UsedBuf = CTab;
+    
+    int Offset = (1280*720); 
+    c->inputBuffers[CTab].pAddrPhyC = c->inputBuffers[CTab].pAddrPhyY + Offset;
+    c->inputBuffers[CTab].pAddrVirC = c->inputBuffers[CTab].pAddrVirY + Offset;
+    
+    FlushCacheAllocInputBuffer(c->pVideoEnc, &c->inputBuffers[CTab]);
+    c->pts += 1000/c->h264Param.nFramerate;
+    c->inputBuffers[CTab].nPts = c->pts;
+    
+    int Ret = AddOneInputBuffer(c->pVideoEnc, &c->inputBuffers[CTab]);
+    if(Ret != 0)
+    {
+        printf("AddOneinputBuffer returned %d\n", Ret);
+    }
+    
+ //   fprintf(stderr, "DataLen = %d, w x h =%d, Copylen=%d\n", Len, 1280*720, DatLen);
+	#ifdef DO_LATENCY_TEST
+    if(true == LEDFrame)
+    {
+        FrameTimes[FrameCTime ++] = GetNowUs();
+    }
+    #endif
+}
+
+void h264enc_done_outputbuffer(h264enc *c)
+{
+    
+    FreeOneBitStreamFrame(c->pVideoEnc, &c->outputBuffer);
+    #ifdef DO_LATENCY_TEST
+    if(true == LEDFrame)
+    {
+        FrameTimes[FrameCTime ++] = GetNowUs();
+        fprintf(stderr, "Frame time: Start[%d], Inp=%d, Enc=%d, Tot=%d\n", (unsigned int) FrameTimes[0], (unsigned int)(FrameTimes[1]-FrameTimes[0]), (unsigned int)(FrameTimes[3]-FrameTimes[2]), (unsigned int)(FrameTimes[4]-FrameTimes[0]));
+        LEDFrame = false;
+        SetLED(0, false);
+        SetLED(1, false);
+    }
+    #endif
+}
+
+void *h264enc_get_bytestream_buffer(const h264enc *c, int stream)
+{
+    PMSG("h264enc_get_bytestream_buffer()");
+    if(stream == 0)
+    {
+        return c->outputBuffer.pData0;
+    }
+    else
+    {
+        return c->outputBuffer.pData1;
+    }
+}
+
+unsigned int h264enc_is_keyframe(const h264enc *c)
+{
+    if(c->outputBuffer.nFlag & VENC_BUFFERFLAG_KEYFRAME)
+    {
+        return 1;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+unsigned int h264enc_get_bytestream_length(const h264enc *c, int stream)
+{
+    //fprintf(stderr, "Pete: h264enc_get_bytestream_length()=%d (%d)\n", c->outputBuffer.nSize0, c->outputBuffer.nSize1);
+    if(stream == 0)
+    {
+        return c->outputBuffer.nSize0;
+    }
+    else
+    {
+        return c->outputBuffer.nSize1;
+    }
+}
+
+int h264enc_encode_picture(h264enc *c)
+{
+    int result;
+    #ifdef DO_LATENCY_TEST
+    if(true == LEDFrame)
+    {
+        FrameTimes[FrameCTime ++] = GetNowUs();
+    }
+    #endif
+    
+    int Ret = VideoEncodeOneFrame(c->pVideoEnc);
+    
+    if(Ret != 0)
+    {
+        printf("VideoEncodeOneFrame returned %d\n" , Ret);
+    }
+    if(UsedBuf >= 0)
+    {
+        AlreadyUsedInputBuffer(c->pVideoEnc,&c->inputBuffers[UsedBuf]);
+        ReturnOneAllocInputBuffer(c->pVideoEnc, &c->inputBuffers[UsedBuf]); // Are these two necessary?
+        GetOneAllocInputBuffer(c->pVideoEnc, &(c->inputBuffers[UsedBuf]));
+        UsedBuf = -1;
+    }
+    else
+    {
+        printf("No buffer to free\n");
+    }
+    result = GetOneBitstreamFrame(c->pVideoEnc, &c->outputBuffer);
+    if(result != 0)
+    {
+        printf("h264enc_encode_picture() Could not get result buffer, GetOneBitstreamFrame returned %d\n", result);
+        return 0;
+    }
+    PMSG("h264enc_encode_picture() complete");
+    #ifdef DO_LATENCY_TEST
+    if(true == LEDFrame)
+    {
+        FrameTimes[FrameCTime ++] = GetNowUs();
+    }
+    #endif
+	return 1;
+}
+
+
 
 int FrameCTime = 0;
 
@@ -496,127 +691,4 @@ bool DetectLEDFrame(unsigned char *Data, size_t Len)
         return true;
     }
     return false;
-}
-void h264enc_set_input_buffer(h264enc *c, void *Dat, size_t Len)
-{
-    PMSG("h264enc_get_input_buffer()");
-
-    #ifdef DO_LATENCY_TEST
-    LEDFrame = DetectLEDFrame(Dat, Len);
-    
-    if(true == LEDFrame)
-    {
-        FrameCTime = 0;
-        FrameTimes[FrameCTime ++] = GetNowUs();
-        SetLED(0, true);
-    }
-    #endif
-    GetOneAllocInputBuffer(c->pVideoEnc, &(c->inputBuffer));
-    
-    c->inputBuffer.bEnableCorp = 0;
-    c->inputBuffer.sCropInfo.nLeft =  0;
-    c->inputBuffer.sCropInfo.nTop  =  0;
-    c->inputBuffer.sCropInfo.nWidth  =  0;
-    c->inputBuffer.sCropInfo.nHeight =  0;
-    
-    //printf("Inp: nFlag=%d, nID=%d ispPicVar=%d, ispPicVarChroma=%d, bUseInputBufferRoi, bAllocMemSelf=%d, nShareBufFd=%d, envLV=%d\n", c->inputBuffer.nFlag, c->inputBuffer.nID, c->inputBuffer.ispPicVar, c->inputBuffer.ispPicVarChroma, c->inputBuffer.bUseInputBufferRoi, c->inputBuffer.bAllocMemSelf, c->inputBuffer.nShareBufFd, c->inputBuffer.envLV);
-    FlushCacheAllocInputBuffer(c->pVideoEnc, &c->inputBuffer);
-    c->pts += 1000/c->h264Param.nFramerate;
-    c->inputBuffer.nPts = c->pts;
-    AddOneInputBuffer(c->pVideoEnc, &c->inputBuffer);
-    
-    int DatLen =  (Len / 3);
- //   fprintf(stderr, "DataLen = %d, w x h =%d, Copylen=%d\n", Len, 1280*720, DatLen);
-	memcpy(c->inputBuffer.pAddrVirY, Dat, DatLen * 2);
-	memcpy(c->inputBuffer.pAddrVirC, Dat + (DatLen * 2), DatLen);
-    #ifdef DO_LATENCY_TEST
-    if(true == LEDFrame)
-    {
-        FrameTimes[FrameCTime ++] = GetNowUs();
-    }
-    #endif
-}
-
-void h264enc_done_outputbuffer(h264enc *c)
-{
-    FreeOneBitStreamFrame(c->pVideoEnc, &c->outputBuffer);
-    #ifdef DO_LATENCY_TEST
-    if(true == LEDFrame)
-    {
-        FrameTimes[FrameCTime ++] = GetNowUs();
-        fprintf(stderr, "Frame time: Start[%d], Inp=%d, Enc=%d, Tot=%d\n", (unsigned int) FrameTimes[0], (unsigned int)(FrameTimes[1]-FrameTimes[0]), (unsigned int)(FrameTimes[3]-FrameTimes[2]), (unsigned int)(FrameTimes[4]-FrameTimes[0]));
-        LEDFrame = false;
-        SetLED(0, false);
-        SetLED(1, false);
-    }
-    #endif
-}
-
-void *h264enc_get_bytestream_buffer(const h264enc *c, int stream)
-{
-    PMSG("h264enc_get_bytestream_buffer()");
-    if(stream == 0)
-    {
-        return c->outputBuffer.pData0;
-    }
-    else
-    {
-        return c->outputBuffer.pData1;
-    }
-}
-
-unsigned int h264enc_is_keyframe(const h264enc *c)
-{
-    if(c->outputBuffer.nFlag & VENC_BUFFERFLAG_KEYFRAME)
-    {
-        return 1;
-    }
-    else
-    {
-        return 0;
-    }
-}
-
-unsigned int h264enc_get_bytestream_length(const h264enc *c, int stream)
-{
-    //fprintf(stderr, "Pete: h264enc_get_bytestream_length()=%d (%d)\n", c->outputBuffer.nSize0, c->outputBuffer.nSize1);
-    if(stream == 0)
-    {
-        return c->outputBuffer.nSize0;
-    }
-    else
-    {
-        return c->outputBuffer.nSize1;
-    }
-}
-
-int h264enc_encode_picture(h264enc *c)
-{
-    int result;
-    #ifdef DO_LATENCY_TEST
-    if(true == LEDFrame)
-    {
-        FrameTimes[FrameCTime ++] = GetNowUs();
-    }
-    #endif
-    PMSG("h264enc_encode_picture()");
-    VideoEncodeOneFrame(c->pVideoEnc);
-    
-    AlreadyUsedInputBuffer(c->pVideoEnc,&c->inputBuffer);
-    ReturnOneAllocInputBuffer(c->pVideoEnc, &c->inputBuffer);
-
-    result = GetOneBitstreamFrame(c->pVideoEnc, &c->outputBuffer);
-    if(result == -1)
-    {
-        printf("h264enc_encode_picture() Could not get result buffer\n");
-        return 0;
-    }
-    PMSG("h264enc_encode_picture() complete");
-    #ifdef DO_LATENCY_TEST
-    if(true == LEDFrame)
-    {
-        FrameTimes[FrameCTime ++] = GetNowUs();
-    }
-    #endif
-	return 1;
 }

@@ -109,6 +109,9 @@ G_DEFINE_TYPE_WITH_CODE(GstSunxiSrc, gst_sunxisrc,
     GST_DEBUG_CATEGORY_INIT (gst_sunxisrc_debug, "sunxisrc",
       0, "Template sunxisrc"));
 
+
+GstSunxiSrc *filt= NULL;  // This definitely shouldn't be a global, should just be passed to each function by gstreamer;s
+
 static void gst_sunxisrc_set_property(GObject *object, guint prop_id, const GValue *value, GParamSpec *pspec);
 static void gst_sunxisrc_get_property(GObject *object, guint prop_id, GValue *value, GParamSpec *pspec);
 
@@ -320,8 +323,9 @@ static gboolean gst_sunxisrc_set_caps(GstBaseSrc * bsrc, GstCaps * caps)
 }
 #endif
 
+
 #define mybuf_size  ((1280*720*3) / 2)
-unsigned char mybuf[mybuf_size] = {128};
+unsigned char mybuf[2][mybuf_size] = {128};
 /* create function
  * this function does the actual processing
  */
@@ -333,6 +337,8 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
     gsize pps_sps_len = 0;
    // printf("Entering %s\n",  __func__);
 	filter = GST_SUNXISRC(psrc);
+    filter = filt;
+    
     /* Wait for a frame to come in */
     /* Give MIPI a new buffer */
     /* Start encode */
@@ -341,50 +347,7 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
     /* Free camera buffer */
     /* Send H264 out */
 
-	if (!filter->enc) {
-        printf("\n**********Starting new encoder************\n");
-        filter->width = 1280;
-        filter->height = 720;
-        filter->bitrate = 8 * 1024 * 1024;
-        filter->keyframe_interval = 12;
-        filter->always_copy = 1;
-        filter->fps_d = 1;
-        filter->fps_n = 60;
-        
-		struct h264enc_params p = {
-			.width = filter->width,
-			.height = filter->height,
-			.src_width = filter->width,
-			.src_height = filter->height,
-			.src_format = H264_FMT_NV12,
-			.profile_idc = 77,	// Main Profile
-			.level_idc = 41,
-			.entropy_coding_mode = H264_EC_CABAC,
-			.qp = filter->pic_init_qp,
-            .bitrate = filter->bitrate,
-            //.bitrate = 8 * 1024 * 1024,
-			.keyframe_interval = filter->keyframe_interval
-		};
 
-        filter->duration = gst_util_uint64_scale_int (GST_SECOND, filter->fps_d,
-                        filter->fps_n);
-		filter->enc = h264enc_new(&p);
-        
-		if (!filter->enc) {
-			GST_ERROR("Cannot initialize H.264 encoder");
-			return GST_FLOW_ERROR;
-		}
-        
-        len0 = h264enc_get_initial_bytestream_length(filter->enc);
-        if(len0)
-        {
-            outbuf = gst_buffer_new_and_alloc(len0);
-            gst_buffer_fill(outbuf, 0, h264enc_get_intial_bytestream_buffer(filter->enc), len0);
-            gst_pad_push(filter->srcpad, outbuf);
-        }
-        else
-            GST_ERROR("Pete: No initial bytestream\n");
-	}
     uint8_t *CamBuf = NULL;
     if(!CamReadFrame(&CamBuf))
     {
@@ -402,7 +365,6 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
 		return GST_FLOW_ERROR;
 	}
     
-    
 	len0 = h264enc_get_bytestream_length(filter->enc, 0);
 	len1 = h264enc_get_bytestream_length(filter->enc, 1);
     
@@ -413,7 +375,7 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
         pps_sps_len = h264enc_get_initial_bytestream_length(filter->enc);
     }
         
-	if (filter->always_copy) {=
+	if (filter->always_copy) {
         gsize offset = 0;
         
 		outbuf = gst_buffer_new_and_alloc(len0 + len1 + pps_sps_len);
@@ -488,6 +450,54 @@ gst_sunxisrc_start (GstBaseSrc * basesrc)
     GstSunxiSrc *src = GST_SUNXISRC(GST_OBJECT_PARENT(basesrc));
     GST_LOG_OBJECT(src, "Creating SunxiSrc pipeline");
     printf("Entering %s\n",  __func__);
+    
+    if (!src->enc) {
+        printf("\n**********Starting new encoder************\n");
+        src->width = 1280;
+        src->height = 720;
+        src->bitrate = 8 * 1024 * 1024;
+        src->keyframe_interval = 12;
+        src->always_copy = 1;
+        src->fps_d = 1;
+        src->fps_n = 60;
+        
+		struct h264enc_params p = {
+			.width = src->width,
+			.height = src->height,
+			.src_width = src->width,
+			.src_height = src->height,
+			.src_format = H264_FMT_NV12,
+			.profile_idc = 77,	// Main Profile
+			.level_idc = 41,
+			.entropy_coding_mode = H264_EC_CABAC,
+			.qp = src->pic_init_qp,
+            .bitrate = src->bitrate,
+            //.bitrate = 8 * 1024 * 1024,
+			.keyframe_interval = src->keyframe_interval
+		};
+
+        src->duration = gst_util_uint64_scale_int (GST_SECOND, src->fps_d,
+                        src->fps_n);
+		src->enc = h264enc_new(&p);
+        printf("src->enc=%p\n", src->enc);
+		if (!src->enc) {
+			GST_ERROR("Cannot initialize H.264 encoder");
+			return GST_FLOW_ERROR;
+		}
+        #if 0
+        len0 = h264enc_get_initial_bytestream_length(filter->enc);
+        if(len0)
+        {
+            outbuf = gst_buffer_new_and_alloc(len0);
+            gst_buffer_fill(outbuf, 0, h264enc_get_intial_bytestream_buffer(filter->enc), len0);
+            gst_pad_push(filter->srcpad, outbuf);
+        }
+        else
+            GST_ERROR("Pete: No initial bytestream\n");
+        #endif
+	}
+    
+        printf("2src->enc=%p\n", src->enc);
     /* V4l2 init */
     if(!CamOpen())
     {
@@ -501,6 +511,8 @@ gst_sunxisrc_start (GstBaseSrc * basesrc)
 
     src->caps = gst_video_info_to_caps (&src->info);
     gst_base_src_start_complete(basesrc, GST_FLOW_OK);
+    
+    filt = src;
     printf("Done %s\n",  __func__);
     return TRUE;
 }
