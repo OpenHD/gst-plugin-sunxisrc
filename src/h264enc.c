@@ -31,7 +31,6 @@
 #include <time.h>
 #include <unistd.h>
 #include "h264enc.h"
-#include "virt2phys.h"
 
 
 // #define DO_LATENCY_TEST
@@ -42,8 +41,10 @@
 #define ROI_NUM 4
 #define ALIGN_XXB(y, x) (((x) + ((y)-1)) & ~((y)-1))
 
+#define KBITS_MAX 64000
 
-#define NUM_BUFFERS 4
+#define BITRATE_MULT 1024
+
 typedef struct {
     unsigned int width;
     unsigned int height;
@@ -72,14 +73,19 @@ struct h264enc_internal {
     VencBaseConfig baseConfig;
     VencAllocateBufferParam bufferParam;
     VideoEncoder* pVideoEnc;
-    VencInputBuffer inputBuffers[NUM_BUFFERS];
+    VencInputBuffer *inputBuffers;
     VencOutputBuffer outputBuffer;
+    
+    unsigned int num_buffers;
+    unsigned char **buffer_pointers;
+    int UsedBuf;
     
     long long pts;
 };
 
 
-int UsedBuf = -1;
+static h264enc H264Enc = {0}; // Why is this global???
+static bool Initialised = false;
 
 #ifdef DO_LATENCY_TEST
 long long GetNowUs()
@@ -304,7 +310,6 @@ int initH264Func(h264enc *h264_func, int width, int height)
 }
 
 
-static h264enc H264Enc = {0};
 void h264enc_free(h264enc *c)
 {
     if(c->pVideoEnc)
@@ -318,12 +323,19 @@ void h264enc_free(h264enc *c)
     {
         CdcMemClose(H264Enc.baseConfig.memops);
     }
+    
+    free(H264Enc.inputBuffers);
+    free(H264Enc.buffer_pointers);
+    
     releaseMb(c);
 }
 
-extern unsigned char *buffer_pointers[4] ;
+unsigned char **h264_get_buffers(h264enc *c)
+{
+    return c->buffer_pointers;
+}
 
-h264enc *h264enc_new(const struct h264enc_params *p)
+h264enc *h264enc_new(const struct h264enc_params *p, int num_buffers)
 {
     bool result;
     
@@ -331,7 +343,7 @@ h264enc *h264enc_new(const struct h264enc_params *p)
     
     initH264ParamsDefault(&H264Enc);
 
-    H264Enc.h264Param.nBitrate = p->bitrate; 
+    H264Enc.h264Param.nBitrate = p->bitrate * BITRATE_MULT; 
    // H264Enc.h264Param.sQPRange.nMaxqp = p->qp; 
    // H264Enc.h264Param.sQPRange.nMinqp = p->qp - 1; 
     H264Enc.h264Param.nMaxKeyInterval = p->keyframe_interval; 
@@ -358,10 +370,10 @@ h264enc *h264enc_new(const struct h264enc_params *p)
     H264Enc.baseConfig.eInputFormat = VENC_PIXEL_YUV420SP;
     //H264Enc.baseConfig.eInputFormat = VENC_PIXEL_YUYV422;
     
-    H264Enc.bufferParam.nSizeY = H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight * 2;
+    H264Enc.bufferParam.nSizeY = (H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight * 3) / 2;
     H264Enc.bufferParam.nSizeC = 0; //H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight/2;
     
-    H264Enc.bufferParam.nBufferNum = 4; // DQ_BUF requires four buffers
+    H264Enc.bufferParam.nBufferNum = num_buffers; // DQ_BUF requires four buffers
     
     H264Enc.pVideoEnc = VideoEncCreate(VENC_CODEC_H264);
     
@@ -386,17 +398,44 @@ h264enc *h264enc_new(const struct h264enc_params *p)
     
     AllocInputBuffer(H264Enc.pVideoEnc, &(H264Enc.bufferParam));
     
-    for(int i = 0 ; i < 4; i ++)
+    H264Enc.num_buffers = num_buffers;
+    H264Enc.inputBuffers = malloc(num_buffers  * sizeof(VencInputBuffer));
+    H264Enc.buffer_pointers = malloc(num_buffers * sizeof(unsigned char *));
+    if(!H264Enc.inputBuffers || !H264Enc.buffer_pointers)
+    {
+        printf("%s Could not allocate memory for input buffers\n", __func__);
+        return false;
+    }
+    
+    for(int i = 0 ; i < num_buffers; i ++)
     {
         GetOneAllocInputBuffer(H264Enc.pVideoEnc, &(H264Enc.inputBuffers[i]));
-        buffer_pointers[i] = H264Enc.inputBuffers[i].pAddrVirY;
-        printf("Set buf %d to %p\n", i, buffer_pointers[i]);
+        H264Enc.buffer_pointers[i] = H264Enc.inputBuffers[i].pAddrVirY;
+        printf("Set buf %d to %p\n", i, H264Enc.buffer_pointers[i]);
         /* Don't return the buffer, we want them all queued ready for the camera to use */
-        //ReturnOneAllocInputBuffer(H264Enc.pVideoEnc, &H264Enc.inputBuffer);
     }
+    Initialised = true;
     
     PMSG("h264enc_new() complete");
 	return &H264Enc;
+}
+
+void h264_set_bitrate(unsigned int Kbits)
+{
+    if(Kbits < 1000)
+        Kbits = 1000;
+    if(Kbits > KBITS_MAX)
+        Kbits = KBITS_MAX;
+    H264Enc.h264Param.nBitrate = Kbits * BITRATE_MULT;
+    if(Initialised)
+    {
+        printf("h264 : Dynamically setting bitrate to %dK\n", Kbits);
+        VideoEncSetParameter(H264Enc.pVideoEnc, VENC_IndexParamH264Param, &(H264Enc.h264Param));
+    }
+    else
+    {
+        printf("Set bitrate on unopened encoder, will use %dK once open\n", Kbits);
+    }
 }
 
 int h264enc_get_initial_bytestream_length(h264enc *c)
@@ -442,9 +481,9 @@ void h264enc_set_input_buffer(h264enc *c, void *Dat, size_t Len)
     
     bool FoundBuf = false;
     int CTab = 0;
-    while((false == FoundBuf) && (CTab < NUM_BUFFERS))
+    while((false == FoundBuf) && (CTab < c->num_buffers))
     {
-        if(buffer_pointers[CTab] == Dat)
+        if(c->buffer_pointers[CTab] == Dat)
         {
             FoundBuf = true;
         }
@@ -459,9 +498,9 @@ void h264enc_set_input_buffer(h264enc *c, void *Dat, size_t Len)
         printf("Could not find buffer %p\n", Dat);
         return;
     }
-    UsedBuf = CTab;
+    c->UsedBuf = CTab;
     
-    int Offset = (1280*720); 
+    int Offset = (H264Enc.baseConfig.nInputWidth * H264Enc.baseConfig.nInputHeight); 
     c->inputBuffers[CTab].pAddrPhyC = c->inputBuffers[CTab].pAddrPhyY + Offset;
     c->inputBuffers[CTab].pAddrVirC = c->inputBuffers[CTab].pAddrVirY + Offset;
     
@@ -554,12 +593,12 @@ int h264enc_encode_picture(h264enc *c)
     {
         printf("VideoEncodeOneFrame returned %d\n" , Ret);
     }
-    if(UsedBuf >= 0)
+    if(c->UsedBuf >= 0)
     {
-        AlreadyUsedInputBuffer(c->pVideoEnc,&c->inputBuffers[UsedBuf]);
-        ReturnOneAllocInputBuffer(c->pVideoEnc, &c->inputBuffers[UsedBuf]); // Are these two necessary?
-        GetOneAllocInputBuffer(c->pVideoEnc, &(c->inputBuffers[UsedBuf]));
-        UsedBuf = -1;
+        AlreadyUsedInputBuffer(c->pVideoEnc,&c->inputBuffers[c->UsedBuf]);
+        ReturnOneAllocInputBuffer(c->pVideoEnc, &c->inputBuffers[c->UsedBuf]); // Are these two necessary?
+        GetOneAllocInputBuffer(c->pVideoEnc, &(c->inputBuffers[c->UsedBuf]));
+        c->UsedBuf = -1;
     }
     else
     {

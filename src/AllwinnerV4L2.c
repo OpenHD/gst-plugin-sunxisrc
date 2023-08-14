@@ -20,15 +20,13 @@ struct buffer {
 
 static char            *dev_name = "/dev/video0";
 static int              fd = -1;
-static struct buffer          *buffers;
-static unsigned int     n_buffers;
+static struct buffer          *buffers = NULL;
+static unsigned int     n_buffers = 0;
+static unsigned char **buffer_pointers = NULL;
 
 static struct v4l2_buffer CInputBuffer;
 static bool BufNeedsQueueing = false;
 
-#define NUM_BUFFERS 4
-unsigned char *buffer_pointers[NUM_BUFFERS] = {0};
- 
 
 static int xioctl(int fh, int request, void *arg)
 {
@@ -148,7 +146,7 @@ static bool init_userp(unsigned int buffer_size)
     
     CLEAR(req);
 
-    req.count  = 4;
+    req.count  = n_buffers;
     req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     req.memory = V4L2_MEMORY_USERPTR;
 
@@ -167,20 +165,20 @@ static bool init_userp(unsigned int buffer_size)
         }
     }
 
-    buffers = calloc(4, sizeof(*buffers));
+    buffers = calloc(n_buffers, sizeof(*buffers));
 
     if (!buffers) {
         fprintf(stderr, "Out of memory\n");
         return false;
     }
 
-    for (n_buffers = 0; n_buffers < 4; ++n_buffers) {
-        buffers[n_buffers].length = buffer_size;
+    for (int i = 0; i < n_buffers; ++i) {
+        buffers[i].length = buffer_size;
         //buffers[n_buffers].start = malloc(buffer_size);
-        printf("Buffer %d set to %p\n", n_buffers, buffer_pointers[n_buffers]);
-        buffers[n_buffers].start = buffer_pointers[n_buffers];
+        printf("Buffer %d set to %p\n", n_buffers, buffer_pointers[i]);
+        buffers[i].start = buffer_pointers[i];
 
-        if (!buffers[n_buffers].start) 
+        if (!buffers[i].start) 
         {
             fprintf(stderr, "Out of memory\n");
             return false;
@@ -190,7 +188,7 @@ static bool init_userp(unsigned int buffer_size)
 }
 
 
-static bool init_camera(void)
+static bool init_camera(int width, int height)
 {
     struct v4l2_capability cap;
     struct v4l2_cropcap cropcap;
@@ -241,8 +239,8 @@ static bool init_camera(void)
 
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-    fmt.fmt.pix.width       = 1280; //replace
-    fmt.fmt.pix.height      = 720; //replace
+    fmt.fmt.pix.width       = width; 
+    fmt.fmt.pix.height      = height; 
     fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12; //replace
     //fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV; //replace
     
@@ -265,7 +263,7 @@ static bool init_camera(void)
     {
         fmt.fmt.pix.sizeimage = min;
     }
-    printf("Init buffer of %d bytes, expecting %d\n", fmt.fmt.pix.sizeimage, 1280 * 720 * 2);
+    printf("Init buffer of %d bytes, expecting %d\n", fmt.fmt.pix.sizeimage, width * height * 2);
     return  init_userp(fmt.fmt.pix.sizeimage); //init_mmap();
 }
 
@@ -354,15 +352,17 @@ void CamClose(void)
     close_device();
 }
 
-bool CamOpen(void)
+bool CamOpen(unsigned int width, unsigned int height, unsigned char **inbuf_pointers, int in_buffers)
 {
     printf("%s()\n", __func__);
+    buffer_pointers = inbuf_pointers;
+    n_buffers = in_buffers;
     if(!open_device())
     {
         printf("%s() Could not open device\n", __func__);
 		return false;
     }
-    if(!init_camera())
+    if(!init_camera(width, height))
     {
         printf("%s() Could not init device\n", __func__);
 		return false;
@@ -370,75 +370,3 @@ bool CamOpen(void)
     printf("%s(): Camera opened succesfully\n", __func__);
     return true;
 }
-
-#if 0
-
-static bool init_mmap(void)
-{
-    struct v4l2_requestbuffers req;
-
-    CLEAR(req);
-
-    req.count = 4;
-    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    req.memory = V4L2_MEMORY_MMAP;
-
-    if (-1 == xioctl(fd, VIDIOC_REQBUFS, &req)) {
-        if (EINVAL == errno) 
-        {
-            printf("%s() Error: %s does not support memory mapping\n", __func__, dev_name);
-            return false;
-        } 
-        else 
-        {
-            printf("%s() Error: VIDIOC_REQBUFS\n", __func__);
-            return false;
-        }
-    }
-
-    if (req.count < 2) 
-    {
-         printf("%s() Error: Insufficient buffer memory on %s\n", __func__, dev_name);
-        return false;
-    }
-    buffers = calloc(req.count, sizeof(*buffers));
-
-    if (!buffers) 
-    {
-         printf("%s() Error: Out of memory\n", __func__);
-        return false;
-    }
-
-    for (n_buffers = 0; n_buffers < req.count; ++n_buffers) 
-    {
-        struct v4l2_buffer buf;
-
-        CLEAR(buf);
-
-        buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory      = V4L2_MEMORY_MMAP;
-        buf.index       = n_buffers;
-
-        if (-1 == xioctl(fd, VIDIOC_QUERYBUF, &buf))
-        {
-            printf("%s() Error: VIDIOC_QUERYBUF\n", __func__);
-        }
-
-        buffers[n_buffers].length = buf.length;
-        buffers[n_buffers].start =
-            mmap(NULL /* start anywhere */,
-                  buf.length,
-                  PROT_READ | PROT_WRITE /* required */,
-                  MAP_SHARED /* recommended */,
-                  fd, buf.m.offset);
-
-        if (MAP_FAILED == buffers[n_buffers].start)
-        {
-            printf("%s() Error: mmap\n", __func__);
-            return false;
-        }
-    }
-    return true;
-}
-
-#endif

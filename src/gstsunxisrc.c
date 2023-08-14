@@ -64,7 +64,10 @@
 GST_DEBUG_CATEGORY_STATIC(gst_sunxisrc_debug);
 #define GST_CAT_DEFAULT gst_sunxisrc_debug
 
-#define BITRATE_MULT 1024
+#define WIDTH 1280
+#define HEIGHT 720
+#define BUF_SIZE ((WIDTH * HEIGHT * 3) / 2)
+#define NUM_BUFFERS 4
 
 enum
 {
@@ -205,7 +208,8 @@ static void gst_sunxisrc_set_property(GObject *object, guint prop_id, const GVal
     printf("Entering %s\n",  __func__);
 	switch (prop_id) {
     case PROP_BITRATE:
-		filter->bitrate = g_value_get_int(value) * BITRATE_MULT;
+		filter->bitrate = g_value_get_int(value);
+        h264_set_bitrate(filter->bitrate);
 		break;
 	case PROP_QP:
 		filter->pic_init_qp = g_value_get_int(value);
@@ -232,7 +236,7 @@ static void gst_sunxisrc_get_property(GObject *object, guint prop_id, GValue *va
     printf("Entering %s\n",  __func__);
 	switch (prop_id) {
     case PROP_BITRATE:
-		g_value_set_int(value, filter->bitrate / BITRATE_MULT);
+		g_value_set_int(value, filter->bitrate);
 		break;
 	case PROP_QP:
 		g_value_set_int(value, filter->pic_init_qp);
@@ -324,8 +328,6 @@ static gboolean gst_sunxisrc_set_caps(GstBaseSrc * bsrc, GstCaps * caps)
 #endif
 
 
-#define mybuf_size  ((1280*720*3) / 2)
-unsigned char mybuf[2][mybuf_size] = {128};
 /* create function
  * this function does the actual processing
  */
@@ -358,7 +360,7 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
     
     GST_CAT_DEBUG(gst_sunxisrc_debug, "received frame from allwinner");
     
-	h264enc_set_input_buffer(filter->enc, CamBuf, mybuf_size);
+	h264enc_set_input_buffer(filter->enc, CamBuf, BUF_SIZE);
 
 	if (!h264enc_encode_picture(filter->enc)) {
          GST_ERROR("cedar h264 encode failed\n");
@@ -453,8 +455,8 @@ gst_sunxisrc_start (GstBaseSrc * basesrc)
     
     if (!src->enc) {
         printf("\n**********Starting new encoder************\n");
-        src->width = 1280;
-        src->height = 720;
+        src->width = WIDTH;
+        src->height = HEIGHT;
         src->bitrate = 8 * 1024 * 1024;
         src->keyframe_interval = 12;
         src->always_copy = 1;
@@ -466,20 +468,17 @@ gst_sunxisrc_start (GstBaseSrc * basesrc)
 			.height = src->height,
 			.src_width = src->width,
 			.src_height = src->height,
-			.src_format = H264_FMT_NV12,
 			.profile_idc = 77,	// Main Profile
 			.level_idc = 41,
-			.entropy_coding_mode = H264_EC_CABAC,
 			.qp = src->pic_init_qp,
             .bitrate = src->bitrate,
-            //.bitrate = 8 * 1024 * 1024,
 			.keyframe_interval = src->keyframe_interval
 		};
 
         src->duration = gst_util_uint64_scale_int (GST_SECOND, src->fps_d,
                         src->fps_n);
-		src->enc = h264enc_new(&p);
-        printf("src->enc=%p\n", src->enc);
+		src->enc = h264enc_new(&p, NUM_BUFFERS);
+        
 		if (!src->enc) {
 			GST_ERROR("Cannot initialize H.264 encoder");
 			return GST_FLOW_ERROR;
@@ -497,9 +496,8 @@ gst_sunxisrc_start (GstBaseSrc * basesrc)
         #endif
 	}
     
-        printf("2src->enc=%p\n", src->enc);
     /* V4l2 init */
-    if(!CamOpen())
+    if(!CamOpen(src->width, src->height, h264_get_buffers(src->enc), NUM_BUFFERS))
     {
         printf("Cannot open camera, fail\n");
         return FALSE;

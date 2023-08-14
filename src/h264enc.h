@@ -27,11 +27,8 @@ struct h264enc_params {
 
 	unsigned int src_width;
 	unsigned int src_height;
-	enum color_format { H264_FMT_NV12 = 0, H264_FMT_NV16 = 1 } src_format;
 
 	unsigned int profile_idc, level_idc;
-
-	enum { H264_EC_CAVLC = 0, H264_EC_CABAC = 1 } entropy_coding_mode;
 
 	unsigned int qp;
 
@@ -42,13 +39,15 @@ struct h264enc_params {
 
 typedef struct h264enc_internal h264enc;
 
-h264enc *h264enc_new(const struct h264enc_params *p);
+h264enc *h264enc_new(const struct h264enc_params *p, int num_buffers);
 void h264enc_free(h264enc *c);
 void h264enc_set_input_buffer(h264enc *c, void *Dat, size_t Len);
 void *h264enc_get_bytestream_buffer(const h264enc *c, int stream);
 unsigned int h264enc_get_bytestream_length(const h264enc *c, int stream);
 void h264enc_done_outputbuffer(h264enc *c);
 int h264enc_encode_picture(h264enc *c);
+void h264_set_bitrate(unsigned int Kbits);
+unsigned char **h264_get_buffers(h264enc *c);
 
 void *h264enc_get_intial_bytestream_buffer(h264enc *c);
 int h264enc_get_initial_bytestream_length(h264enc *c);
