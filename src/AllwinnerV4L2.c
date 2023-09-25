@@ -107,6 +107,7 @@ bool CamStartCapture(void)
         buf.index = i;
         buf.m.userptr = (unsigned long)buffers[i].start;
         buf.length = buffers[i].length;
+        
         if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
         {
             printf("%s() Error: VIDIOC_QBUF\n", __func__);
@@ -175,7 +176,7 @@ static bool init_userp(unsigned int buffer_size)
     for (int i = 0; i < n_buffers; ++i) {
         buffers[i].length = buffer_size;
         //buffers[n_buffers].start = malloc(buffer_size);
-        printf("Buffer %d set to %p\n", n_buffers, buffer_pointers[i]);
+        printf("Buffer %d set to %p\n", i, buffer_pointers[i]);
         buffers[i].start = buffer_pointers[i];
 
         if (!buffers[i].start) 

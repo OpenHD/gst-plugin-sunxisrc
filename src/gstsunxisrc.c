@@ -53,11 +53,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/time.h>
+#include <time.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
-
 #include "gstsunxisrc.h"
 #include "AllwinnerV4L2.h"
 
@@ -66,8 +67,24 @@ GST_DEBUG_CATEGORY_STATIC(gst_sunxisrc_debug);
 
 #define WIDTH 1280
 #define HEIGHT 720
-#define BUF_SIZE ((WIDTH * HEIGHT * 3) / 2)
+//#define BUF_SIZE ((WIDTH * HEIGHT * 3) / 2)
+#define BUF_SIZE ((WIDTH * HEIGHT * 2))
 #define NUM_BUFFERS 4
+
+#define NUM_TIME_STEPS 7
+uint32_t FrameTimes[NUM_TIME_STEPS] = {0};
+uint32_t MaxFrameTimes[NUM_TIME_STEPS] = {0};
+#define NUM_FRAMERATE_TIMES 60
+uint32_t FrameNum[NUM_FRAMERATE_TIMES] = {0};
+uint32_t FramerateTimes[NUM_FRAMERATE_TIMES] = {0};
+uint32_t EncTimes[NUM_FRAMERATE_TIMES] = {0};
+
+long long GetNowUs()
+{
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    return now.tv_sec * 1000000 + now.tv_usec;
+}
 
 enum
 {
@@ -135,6 +152,8 @@ static void gst_sunxisrc_class_init(GstSunxiSrcClass *klass)
     GstPushSrcClass *gstpushsrc_class;
 
     printf("Entering %s\n",  __func__);
+    
+    
 	gobject_class = (GObjectClass *) klass;
 	gstelement_class = (GstElementClass *) klass;
     gstbasesrc_class = (GstBaseSrcClass *) klass;
@@ -333,6 +352,7 @@ static gboolean gst_sunxisrc_set_caps(GstBaseSrc * bsrc, GstCaps * caps)
  */
 static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
 {
+    static int32_t TimeUntilPPS = 2;
 	GstSunxiSrc *filter;
 	GstBuffer *outbuf = NULL;
 	gsize len0, len1;
@@ -340,6 +360,10 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
    // printf("Entering %s\n",  __func__);
 	filter = GST_SUNXISRC(psrc);
     filter = filt;
+    static unsigned int StartFrameTime = 0;
+    
+    int FrameCTime = 0;
+    FrameTimes[FrameCTime ++] = GetNowUs();
     
     /* Wait for a frame to come in */
     /* Give MIPI a new buffer */
@@ -357,24 +381,31 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
         "SunxiSrc error calling AllwinnerV4l2WaitForFrame", (NULL)); */
         return GST_FLOW_ERROR;
     }
+    FrameTimes[FrameCTime ++] = GetNowUs();
     
     GST_CAT_DEBUG(gst_sunxisrc_debug, "received frame from allwinner");
     
 	h264enc_set_input_buffer(filter->enc, CamBuf, BUF_SIZE);
+    FrameTimes[FrameCTime ++] = GetNowUs();
 
 	if (!h264enc_encode_picture(filter->enc)) {
          GST_ERROR("cedar h264 encode failed\n");
 		return GST_FLOW_ERROR;
 	}
+    FrameTimes[FrameCTime ++] = GetNowUs();
     
 	len0 = h264enc_get_bytestream_length(filter->enc, 0);
 	len1 = h264enc_get_bytestream_length(filter->enc, 1);
+    FrameTimes[FrameCTime ++] = GetNowUs();
     
-    
-    // Send SPS and PPS with keyframes
-    if(h264enc_is_keyframe(filter->enc))
+    bool DoPPS = false;
+    // Send SPS and PPS with keyframes or sporadically if we don't have keyframes
+    //TimeUntilPPS --;
+    if((h264enc_is_keyframe(filter->enc)) || (TimeUntilPPS <= 0))
     {
         pps_sps_len = h264enc_get_initial_bytestream_length(filter->enc);
+        TimeUntilPPS = 60;
+        DoPPS = true;
     }
         
 	if (filter->always_copy) {
@@ -382,7 +413,7 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
         
 		outbuf = gst_buffer_new_and_alloc(len0 + len1 + pps_sps_len);
         
-        if(h264enc_is_keyframe(filter->enc))
+        if(DoPPS == true)
         {
             gst_buffer_fill(outbuf, 0, h264enc_get_intial_bytestream_buffer(filter->enc), pps_sps_len);
             offset += pps_sps_len;
@@ -392,9 +423,9 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
         
         if(len1 > 0)
         {
-            printf("and %d bytes\n", len1);
             gst_buffer_fill(outbuf, offset, h264enc_get_bytestream_buffer(filter->enc, 1), len1);
         }
+        FrameTimes[FrameCTime ++] = GetNowUs();
 	} else {
         gsize offset = 0;
         printf("Nooooo this may not work!!!!\n");
@@ -442,6 +473,88 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
     *buf = outbuf;
     
     GST_BUFFER_DURATION (*buf) = filter->duration;
+    FrameTimes[FrameCTime ++] = GetNowUs();
+    
+    {
+        static long long AvEnc = 0;
+        static long long AvTotTime = 0;
+        static long long AvTimeSinceLastFrame = 0;
+        static unsigned int MaxEnc = 0;
+        static unsigned int MaxTotTime =  0;
+        static unsigned int MaxTimeSinceLastFrame =  0;
+        static int Periodic = 0;
+        static unsigned int FrameCount = 0;
+        static int FramerateTimeCount = 0;
+        static FILE *fp=NULL;
+        
+        FrameCount ++;
+        unsigned int EncTime = FrameTimes[3] - FrameTimes[2];
+        unsigned int TotTime = FrameTimes[6] - FrameTimes[0];
+        unsigned int TimeSinceLastFrame = FrameTimes[1] - StartFrameTime;
+        
+        #if 0
+        if(TimeSinceLastFrame > 18500)
+        {
+            FramerateTimes[FramerateTimeCount] = TimeSinceLastFrame;
+            EncTimes[FramerateTimeCount] = EncTime;
+            FrameNum[FramerateTimeCount] = FrameCount;
+            FramerateTimeCount ++;
+        }
+        #endif
+        
+        StartFrameTime = FrameTimes[1];
+        
+        AvEnc += EncTime;
+        AvTotTime += TotTime;
+        AvTimeSinceLastFrame += TimeSinceLastFrame;
+
+        
+        if(EncTime > MaxEnc)
+        {
+            MaxEnc = EncTime;
+        }
+        if(TimeSinceLastFrame > MaxTimeSinceLastFrame)
+        {
+            MaxTimeSinceLastFrame = TimeSinceLastFrame;
+        }
+        
+        if(TotTime > MaxTotTime)
+        {
+            MaxTotTime =  TotTime;
+            memcpy(MaxFrameTimes, FrameTimes, NUM_TIME_STEPS * sizeof(uint32_t));
+        }
+        #if 0
+        if(EncTime > 12000)
+        {
+            printf("Encode times was %dus, total %dus\n", (unsigned int) EncTime, (unsigned int) TotTime);
+        }
+        else if(TotTime > 30000)
+        {
+            printf("Tot time was %dus, encode %dus\n", (unsigned int) TotTime, (unsigned int) EncTime);
+        }
+        #endif
+        if(Periodic ++ >= 60)
+        {
+            Periodic = 0;
+            AvEnc /= 60;
+            AvTotTime /= 60;
+            AvTimeSinceLastFrame /= 60;
+            fprintf(stderr, "TimeSinceLast: %d, Frame time: %d:%d:%d:%d:%d:%d Tot %d. Av encode was %d, Max %d, Tot Av %d max %d. LastFrame: Av %d, Max %d\n", (unsigned int)TimeSinceLastFrame, (unsigned int)(MaxFrameTimes[1]-MaxFrameTimes[0]), (unsigned int)(MaxFrameTimes[2]-MaxFrameTimes[1]), (unsigned int)(MaxFrameTimes[3]-MaxFrameTimes[2]), (unsigned int)(MaxFrameTimes[4]-MaxFrameTimes[3]), (unsigned int)(MaxFrameTimes[5]-MaxFrameTimes[4]), (unsigned int)(MaxFrameTimes[6]-MaxFrameTimes[5]), TotTime, (unsigned int)AvEnc, MaxEnc, (unsigned int)AvTotTime, MaxTotTime, (unsigned int)AvTimeSinceLastFrame, MaxTimeSinceLastFrame);
+            AvEnc = AvTotTime = MaxEnc = MaxTotTime = AvTimeSinceLastFrame = MaxTimeSinceLastFrame = 0;
+#if 0
+            if(fp)
+            {
+                for(int i = 0; i < FramerateTimeCount; i++)
+                    fprintf(fp, "%d\t%d\t%d\n", FrameNum[i], FramerateTimes[i], EncTimes[i]);
+                FramerateTimeCount = 0;
+            }
+            else
+            {
+                fp = fopen("/home/openhd/FrameTimeLog.txt","w");
+            }
+#endif
+        }
+    }
    // printf("Done %s\n",  __func__);
 	return GST_FLOW_OK;
 }
@@ -457,8 +570,8 @@ gst_sunxisrc_start (GstBaseSrc * basesrc)
         printf("\n**********Starting new encoder************\n");
         src->width = WIDTH;
         src->height = HEIGHT;
-        src->bitrate = 8 * 1024 * 1024;
-        src->keyframe_interval = 12;
+        src->bitrate = 10 * 1024;
+        src->keyframe_interval = 6;
         src->always_copy = 1;
         src->fps_d = 1;
         src->fps_n = 60;
@@ -483,17 +596,6 @@ gst_sunxisrc_start (GstBaseSrc * basesrc)
 			GST_ERROR("Cannot initialize H.264 encoder");
 			return GST_FLOW_ERROR;
 		}
-        #if 0
-        len0 = h264enc_get_initial_bytestream_length(filter->enc);
-        if(len0)
-        {
-            outbuf = gst_buffer_new_and_alloc(len0);
-            gst_buffer_fill(outbuf, 0, h264enc_get_intial_bytestream_buffer(filter->enc), len0);
-            gst_pad_push(filter->srcpad, outbuf);
-        }
-        else
-            GST_ERROR("Pete: No initial bytestream\n");
-        #endif
 	}
     
     /* V4l2 init */

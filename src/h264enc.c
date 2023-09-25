@@ -30,15 +30,16 @@
 #include <stdbool.h>
 #include <time.h>
 #include <unistd.h>
+#include "jsonload.h"
 #include "h264enc.h"
 
 
-// #define DO_LATENCY_TEST
+//#define DO_LATENCY_TEST
  
 #define MSG(x) fprintf(stderr, "h264enc: " x "\n")
 //#define PMSG(x) fprintf(stderr, "Pete: " x "\n"); fflush(stderr)
 #define PMSG(x)
-#define ROI_NUM 4
+#define ROI_NUM 2
 #define ALIGN_XXB(y, x) (((x) + ((y)-1)) & ~((y)-1))
 
 #define KBITS_MAX 64000
@@ -58,13 +59,8 @@ typedef struct {
 struct h264enc_internal {
     VencHeaderData          sps_pps_data;
     VencH264Param           h264Param;
-    VencMBModeCtrl          h264MBMode;
-    VencMBInfo              MBInfo;
-    VencH264FixQP           fixQP;
     VencSuperFrameConfig    sSuperFrameCfg;
     VencH264SVCSkip         SVCSkip; // set SVC and skip_frame
-    VencH264AspectRatio     sAspectRatio;
-    VencH264VideoSignal     sVideoSignal;
     VencCyclicIntraRefresh  sIntraRefresh;
     VencROIConfig           sRoiConfig[ROI_NUM];
     VeProcSet               sVeProcInfo;
@@ -87,15 +83,32 @@ struct h264enc_internal {
 static h264enc H264Enc = {0}; // Why is this global???
 static bool Initialised = false;
 
+
+#define NUM_CONFIG_ELEMS 5
+JsonToConfigElem ConfigElems[NUM_CONFIG_ELEMS]  = 
+{
+    {  "bEntropyCodingCABAC", &H264Enc.bEntropyCodingCABAC, sizeof(H264Enc.bEntropyCodingCABAC),"%d" },
+    {  "nMaxKeyInterval", &nMaxKeyInterval, sizeof(bEntropyCodingCABAC),"%d" },
+    {  "nCodingMode", &nCodingMode, sizeof(bEntropyCodingCABAC),"%d" },
+    {  "bLongRefEnable", &bLongRefEnable, sizeof(bEntropyCodingCABAC),"%d" },
+    {  "nLongRefPoc", &nLongRefPoc, sizeof(bEntropyCodingCABAC),"%d" }
+};
+
 #ifdef DO_LATENCY_TEST
-long long GetNowUs()
+static long long GetNowUs()
 {
     struct timeval now;
     gettimeofday(&now, NULL);
     return now.tv_sec * 1000000 + now.tv_usec;
 }
+
+bool LEDFrame = false;
+bool DetectLEDFrame(unsigned char *Data, size_t Len);
+void SetLED(int LED, bool On);
+
 #define NUM_TIME_STEPS 6
-uint32_t FrameTimes[NUM_TIME_STEPS] = {0};
+static uint32_t FrameCTime = 0;
+static uint32_t FrameTimes[NUM_TIME_STEPS] = {0};
 #endif
 
 
@@ -153,7 +166,7 @@ void init_super_frame_cfg(VencSuperFrameConfig *sSuperFrameCfg)
 
 void init_svc_skip(VencH264SVCSkip *SVCSkip)
 {
-    SVCSkip->nTemporalSVC = T_LAYER_4;
+    SVCSkip->nTemporalSVC = NO_T_SVC; //T_LAYER_4;
     switch(SVCSkip->nTemporalSVC)
     {
         case T_LAYER_4:
@@ -174,8 +187,8 @@ void init_svc_skip(VencH264SVCSkip *SVCSkip)
 void init_aspect_ratio(VencH264AspectRatio *sAspectRatio)
 {
     sAspectRatio->aspect_ratio_idc = 255;
-    sAspectRatio->sar_width = 4;
-    sAspectRatio->sar_height = 3;
+    sAspectRatio->sar_width = 16;
+    sAspectRatio->sar_height = 9;
 }
 
 void init_video_signal(VencH264VideoSignal *sVideoSignal)
@@ -185,11 +198,6 @@ void init_video_signal(VencH264VideoSignal *sVideoSignal)
     sVideoSignal->dst_colour_primaries = 1;
 }
 
-void init_intra_refresh(VencCyclicIntraRefresh *sIntraRefresh)
-{
-    sIntraRefresh->bEnable = 1;
-    sIntraRefresh->nBlockNumber = 10;
-}
 
 void init_roi(VencROIConfig *sRoiConfig)
 {
@@ -228,26 +236,8 @@ void init_roi(VencROIConfig *sRoiConfig)
 
 void init_enc_proc_info(VeProcSet *ve_proc_set)
 {
-    ve_proc_set->bProcEnable = 1;
+    ve_proc_set->bProcEnable = 0;
     ve_proc_set->nProcFreq = 3;
-}
-
-void releaseMb(h264enc *h264_func)
-{
-    VencMBInfo *pMBInfo = NULL;
-    VencMBModeCtrl *pMBMode = NULL;
-    if(h264_func->h264MBMode.mode_ctrl_en)
-    {
-        pMBInfo = &h264_func->MBInfo;
-        pMBMode = &h264_func->h264MBMode;
-    }
-    else
-        return;
-
-    if(pMBInfo->p_para)
-        free(pMBInfo->p_para);
-    if(pMBMode->p_info)
-        free(pMBMode->p_info);
 }
 
 void initH264ParamsDefault(h264enc *h264_func)
@@ -256,48 +246,29 @@ void initH264ParamsDefault(h264enc *h264_func)
 
     //init h264Param
     h264_func->h264Param.bEntropyCodingCABAC = 1;
-    h264_func->h264Param.nBitrate = 8 * 1024 * 1024; 
+    h264_func->h264Param.nBitrate = 10 * 1024 * 1024; 
     h264_func->h264Param.nFramerate = 60;
     h264_func->h264Param.nCodingMode = VENC_FRAME_CODING;
-    h264_func->h264Param.nMaxKeyInterval = 16; 
-    h264_func->h264Param.sProfileLevel.nProfile = VENC_H264ProfileHigh; //VENC_H264ProfileHigh; / VENC_H264ProfileBaseline
+    h264_func->h264Param.nMaxKeyInterval = 1200; 
+    h264_func->h264Param.sProfileLevel.nProfile = VENC_H264ProfileHigh; //VENC_H264ProfileHigh; / VENC_H264ProfileMain VENC_H264ProfileBaseline
     h264_func->h264Param.sProfileLevel.nLevel = VENC_H264Level41; // VENC_H264Level51;
     h264_func->h264Param.sQPRange.nMinqp = 10;
     h264_func->h264Param.sQPRange.nMaxqp = 50;
-    h264_func->h264Param.bLongRefEnable = 1;
+    h264_func->h264Param.bLongRefEnable = 0;
     h264_func->h264Param.nLongRefPoc = 0;
 
-    h264_func->sH264Smart.img_bin_en = 1;
-    h264_func->sH264Smart.img_bin_th = 27;
-    h264_func->sH264Smart.shift_bits = 2;
-    h264_func->sH264Smart.smart_fun_en = 1;
+    h264_func->sIntraRefresh.bEnable = 1;
+    h264_func->sIntraRefresh.nBlockNumber = 6;
 }
 
 int initH264Func(h264enc *h264_func, int width, int height)
 {
-    //init VencMBModeCtrl
-    init_mb_mode(&h264_func->h264MBMode, width, height);
-
-    //init VencMBInfo
-    init_mb_info(&h264_func->MBInfo, width, height);
-
-    //init VencH264FixQP
-    init_fix_qp(&h264_func->fixQP);
-
-    //init VencSuperFrameConfig
-    init_super_frame_cfg(&h264_func->sSuperFrameCfg);
-
-    //init VencH264SVCSkip
-    init_svc_skip(&h264_func->SVCSkip);
 
     //init VencH264AspectRatio
     init_aspect_ratio(&h264_func->sAspectRatio);
 
     //init VencH264AspectRatio
     init_video_signal(&h264_func->sVideoSignal);
-
-    //init CyclicIntraRefresh
-    init_intra_refresh(&h264_func->sIntraRefresh);
 
     //init VencROIConfig
     init_roi(h264_func->sRoiConfig);
@@ -327,7 +298,6 @@ void h264enc_free(h264enc *c)
     free(H264Enc.inputBuffers);
     free(H264Enc.buffer_pointers);
     
-    releaseMb(c);
 }
 
 unsigned char **h264_get_buffers(h264enc *c)
@@ -343,10 +313,12 @@ h264enc *h264enc_new(const struct h264enc_params *p, int num_buffers)
     
     initH264ParamsDefault(&H264Enc);
 
-    H264Enc.h264Param.nBitrate = p->bitrate * BITRATE_MULT; 
-   // H264Enc.h264Param.sQPRange.nMaxqp = p->qp; 
-   // H264Enc.h264Param.sQPRange.nMinqp = p->qp - 1; 
-    H264Enc.h264Param.nMaxKeyInterval = p->keyframe_interval; 
+    /* Only set bitrate to this if it's not already been set by a call to h264_setbitrate */
+    if(H264Enc.h264Param.nBitrate == 0)
+    {
+        H264Enc.h264Param.nBitrate = p->bitrate * BITRATE_MULT; 
+    }
+    H264Enc.sIntraRefresh.nBlockNumber = p->keyframe_interval; // we are using rolling i-frame (intra-refresh), so rather than set keyframe interval we set nBlocknumber 
    
     fprintf(stderr, "bitrate=%d, qp=%d, keyframe=%d\n", p->bitrate, p->qp, p->keyframe_interval);
             
@@ -370,7 +342,7 @@ h264enc *h264enc_new(const struct h264enc_params *p, int num_buffers)
     H264Enc.baseConfig.eInputFormat = VENC_PIXEL_YUV420SP;
     //H264Enc.baseConfig.eInputFormat = VENC_PIXEL_YUYV422;
     
-    H264Enc.bufferParam.nSizeY = (H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight * 3) / 2;
+    H264Enc.bufferParam.nSizeY = (H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight * 2);
     H264Enc.bufferParam.nSizeC = 0; //H264Enc.baseConfig.nInputWidth*H264Enc.baseConfig.nInputHeight/2;
     
     H264Enc.bufferParam.nBufferNum = num_buffers; // DQ_BUF requires four buffers
@@ -378,12 +350,15 @@ h264enc *h264enc_new(const struct h264enc_params *p, int num_buffers)
     H264Enc.pVideoEnc = VideoEncCreate(VENC_CODEC_H264);
     
     result = initH264Func(&H264Enc, p->width, p->height);
-
     if(result)
     {
         MSG("initH264Func error, return \n");
         return false;
     }
+    
+    /* Having set everything to defaults, we try to load the json config. If we can't we use defaults */
+    
+    LoadJsonConfig("/usr/local/share/openhd/video/sunxisrc_h264.json", ConfigElems, NUM_CONFIG_ELEMS);
 
     unsigned int vbv_size = 12*1024*1024;
     VideoEncSetParameter(H264Enc.pVideoEnc, VENC_IndexParamH264Param, &(H264Enc.h264Param));
@@ -395,6 +370,16 @@ h264enc *h264enc_new(const struct h264enc_params *p, int num_buffers)
     VideoEncInit(H264Enc.pVideoEnc, &(H264Enc.baseConfig));
 
     VideoEncGetParameter(H264Enc.pVideoEnc, VENC_IndexParamH264SPSPPS, &(H264Enc.sps_pps_data));
+    
+    if(H264Enc.sIntraRefresh.bEnable)
+    {
+        VideoEncSetParameter(H264Enc.pVideoEnc, VENC_IndexParamH264CyclicIntraRefresh,
+                                 &H264Enc.sIntraRefresh);
+    }
+    		//VideoEncSetParameter(pVideoEnc, VENC_IndexParamROIConfig, &sRoiConfig[0]);
+		//VideoEncSetParameter(pVideoEnc, VENC_IndexParamROIConfig, &sRoiConfig[1]);
+		//VideoEncSetParameter(pVideoEnc, VENC_IndexParamROIConfig, &sRoiConfig[2]);
+		//VideoEncSetParameter(pVideoEnc, VENC_IndexParamROIConfig, &sRoiConfig[3]);
     
     AllocInputBuffer(H264Enc.pVideoEnc, &(H264Enc.bufferParam));
     
@@ -441,20 +426,6 @@ void h264_set_bitrate(unsigned int Kbits)
 int h264enc_get_initial_bytestream_length(h264enc *c)
 {
     return c->sps_pps_data.nLength;
-}
-
-void my_copy(volatile unsigned char *dst, volatile unsigned char *src, int sz)
-{
-    if (sz & 63) {
-        sz = (sz & -64) + 64;
-    }
-    asm volatile (
-        "NEONCopyPLD:                          \n"
-        "    VLDM %[src]!,{d0-d7}                 \n"
-        "    VSTM %[dst]!,{d0-d7}                 \n"
-        "    SUBS %[sz],%[sz],#0x40                 \n"
-        "    BGT NEONCopyPLD                  \n"
-        : [dst]"+r"(dst), [src]"+r"(src), [sz]"+r"(sz) : : "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "cc", "memory");
 }
 
 void *h264enc_get_intial_bytestream_buffer(h264enc *c)
@@ -621,74 +592,71 @@ int h264enc_encode_picture(h264enc *c)
 }
 
 
-
-int FrameCTime = 0;
-
-
-// Also need to update the init in SetLED()
-#define NUM_LEDS 2
-#define LED_STR_LEN 60
-static const char LEDS[NUM_LEDS][LED_STR_LEN] = 
+#define NUM_LEDS 3
+static const char *LEDS[NUM_LEDS] = 
 {  
-    "/sys/class/gpio/gpio11/value", 
-    "/sys/class/gpio/gpio12/value"
+    "100",
+    "101",
+    "104"
 };
+FILE *LEDFiles[NUM_LEDS] = {NULL};
 
+char LEDSetStr[50];
 void SetLED(int LED, bool On)
 {
-   static bool HaveInited = false;
+    static bool Initd = false;
     
-    if(!HaveInited)
+    if(!Initd)
     {
         FILE *fp = fopen("/sys/class/gpio/export", "w");
         if(!fp)
         {
-            printf("Could not initialise LEDs\n"); 
-            return;
+            printf("Could not init LEDs\n");
         }
-         fprintf(fp, "11");
-        fclose(fp);
-        fp = fopen("/sys/class/gpio/export", "w");
-         fprintf(fp, "12");
-        fclose(fp);
-        fp = fopen("/sys/class/gpio/gpio11/direction", "w");
-        if(!fp)
+        else
         {
-            printf("Could not initialise LED 11\n"); 
-            return;
+            for(int i = 0; i < NUM_LEDS; i++)
+            {
+                fprintf(fp, "%s\n", LEDS[i]);
+                fflush(fp);
+                
+                sprintf(LEDSetStr, "/sys/class/gpio/gpio%s/value", LEDS[i]);
+                printf("Opening %s\n", LEDSetStr);
+                LEDFiles[i] = fopen(LEDSetStr, "w");
+                if(!LEDFiles[i])
+                {
+                    printf("Could not open LED %s, file %s\n", LEDS[i], LEDSetStr);
+                }
+                
+                fprintf(LEDFiles[LED], "1\n");
+                fflush(LEDFiles[LED]);
+            }
+            fclose(fp);
         }
-        fprintf(fp, "out");
-        fclose(fp);
-        fp = fopen("/sys/class/gpio/gpio12/direction", "w");
-        if(!fp)
-        {
-            printf("Could not initialise LED 12\n"); 
-            return;
-        }
-        fprintf(fp, "out");
-        fclose(fp);
-        HaveInited = true;
+        Initd = true;
     }
-   if(LED < NUM_LEDS)
-   {
-       FILE *fp = fopen(LEDS[LED], "w");
-       if(fp)
-       {
-           fprintf(fp, "%d", (int)(!On));
-           fclose(fp);
-       }
-       else
-       {
-           printf("Could not open [%s]\n", LEDS[LED]);
-       }
-   }
-   else
-   {
-       printf("Invalid LED\n");
-   }
+    
+    if((LED < NUM_LEDS))
+    {
+        if(LEDFiles[LED] == NULL)
+        {
+            printf("file for %s not open\n", LEDS[LED]);
+        }
+        else
+        {
+            if(On)
+                fprintf(LEDFiles[LED], "0\n");
+            else
+                fprintf(LEDFiles[LED], "1\n");
+            fflush(LEDFiles[LED]);
+        }
+    }
+    else
+    {
+        printf("Invalid LED\n");
+    }
 }
 
-bool LEDFrame = false;
 
 #define WIDTH 1280
 #define HEIGHT 720
@@ -698,11 +666,11 @@ bool DetectLEDFrame(unsigned char *Data, size_t Len)
     uint64_t TotLum = 0;
     uint32_t AvLum;
     int WindowSize = 8; // -WindowSize to +WindowSize
-    int StartY = (HEIGHT / 2) - WindowSize;
+    int StartY = (HEIGHT) - WindowSize; // Changed from HEIGHT / 2 to give best possible results
     int StartX = (WIDTH / 2) - WindowSize;
 
-    /* Make sure we can't retrigger within 0.3s */
-    if(Count <= 18)
+    /* Make sure we can't retrigger within 0.16s */
+    if(Count <= 10)
     {
         Count ++;
         return false;
@@ -727,6 +695,16 @@ bool DetectLEDFrame(unsigned char *Data, size_t Len)
     if(AvLum > 128)
     {
         Count = 0;
+        
+        /* Optionally add a small white & black rectangle to the top left of the frame */
+        for(int y = 0; y<12; y ++)
+        {
+            for(int x = 0; x < 12; x += 2)
+            {
+                Data[y * WIDTH + x] = 0;
+                Data[y * WIDTH + x + 1] = 255;
+            }
+        }
         return true;
     }
     return false;
