@@ -98,8 +98,24 @@ bool LoadJsonConfig(char *Filename, JsonToConfigElem *ConfigElems, int NumConfig
         if(JsonTok)
         {
             char *Val = JsonFileBuf + JsonTok->start;
+            char OldVal[8];
             JsonFileBuf[JsonTok->end] = '\0';
-            sscanf(Val, ConfigElems[i].ScanfChar, ConfigElems[i].Elem);
+            
+            memcpy(OldVal, ConfigElems[i].Elem, ConfigElems[i].ElemSize); // Backup the old value in case sscanf doesn't work
+            printf("Param %s was %d...", ConfigElems[i].ElemName, *(int *)ConfigElems[i].Elem);
+            if(1 != sscanf(Val, ConfigElems[i].ScanfChar, ConfigElems[i].Elem))
+            {
+                printf("Could not load element %s from file, should have been %s\n", ConfigElems[i].ElemName, Val);
+                memcpy(ConfigElems[i].Elem, OldVal, ConfigElems[i].ElemSize); 
+            }
+            else
+            {
+                printf("now %d (str %s)\n", *(int *)ConfigElems[i].Elem, Val);
+            }
+        }
+        else
+        {
+            printf("Could not find config file element %s, skipping\n", ConfigElems[i].ElemName);
         }
     }
     
