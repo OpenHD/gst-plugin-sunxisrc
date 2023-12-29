@@ -69,7 +69,7 @@ GST_DEBUG_CATEGORY_STATIC(gst_sunxisrc_debug);
 #define HEIGHT 720
 //#define BUF_SIZE ((WIDTH * HEIGHT * 3) / 2)
 #define BUF_SIZE ((WIDTH * HEIGHT * 2))
-#define NUM_BUFFERS 4
+#define NUM_BUFFERS 3
 
 #define NUM_TIME_STEPS 7
 uint32_t FrameTimes[NUM_TIME_STEPS] = {0};
@@ -129,6 +129,17 @@ G_DEFINE_TYPE_WITH_CODE(GstSunxiSrc, gst_sunxisrc,
     GST_DEBUG_CATEGORY_INIT (gst_sunxisrc_debug, "sunxisrc",
       0, "Template sunxisrc"));
 
+static 	struct h264enc_params H264Params = {
+    .width = WIDTH,
+    .height = HEIGHT,
+    .src_width = WIDTH,
+    .src_height = HEIGHT,
+    .profile_idc = 77,	// Main Profile
+    .level_idc = 41,
+    .qp = 20,
+    .bitrate = 10000,
+    .keyframe_interval = 8
+};
 
 GstSunxiSrc *filt= NULL;  // This definitely shouldn't be a global, should just be passed to each function by gstreamer;s
 
@@ -213,11 +224,6 @@ static void gst_sunxisrc_init(GstSunxiSrc *filter)
 
 	//gst_element_add_pad(GST_ELEMENT(filter), filter->srcpad);
 
-    
-	filter->bitrate = 0; // If bitrate is 0 we will be in qp mode
-	filter->pic_init_qp = 15;
-	filter->keyframe_interval = 0;
-	filter->always_copy = TRUE;
     printf("Done %s\n",  __func__);
 }
 
@@ -228,6 +234,7 @@ static void gst_sunxisrc_set_property(GObject *object, guint prop_id, const GVal
 	switch (prop_id) {
     case PROP_BITRATE:
 		filter->bitrate = g_value_get_int(value);
+        H264Params.bitrate = filter->bitrate;
         h264_set_bitrate(filter->bitrate);
 		break;
 	case PROP_QP:
@@ -236,6 +243,7 @@ static void gst_sunxisrc_set_property(GObject *object, guint prop_id, const GVal
 
 	case PROP_KEYFRAME_INTERVAL:
 		filter->keyframe_interval = g_value_get_int(value);
+        H264Params.keyframe_interval = filter->keyframe_interval;
 		break;
 
 	case PROP_ALWAYS_COPY:
@@ -359,7 +367,7 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
     gsize pps_sps_len = 0;
    // printf("Entering %s\n",  __func__);
 	filter = GST_SUNXISRC(psrc);
-    filter = filt;
+    //filter = filt;
     static unsigned int StartFrameTime = 0;
     
     int FrameCTime = 0;
@@ -381,6 +389,8 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
         "SunxiSrc error calling AllwinnerV4l2WaitForFrame", (NULL)); */
         return GST_FLOW_ERROR;
     }
+    GstClock *clock = gst_element_get_clock (GST_ELEMENT (filter));
+    GstClockTime clock_time = gst_clock_get_time (clock);
     FrameTimes[FrameCTime ++] = GetNowUs();
     
     GST_CAT_DEBUG(gst_sunxisrc_debug, "received frame from allwinner");
@@ -400,61 +410,40 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
     
     bool DoPPS = false;
     // Send SPS and PPS with keyframes or sporadically if we don't have keyframes
-    //TimeUntilPPS --;
-    if((h264enc_is_keyframe(filter->enc)) || (TimeUntilPPS <= 0))
+    TimeUntilPPS --;
+    //if((h264enc_is_keyframe(filter->enc)) || (TimeUntilPPS <= 0))
+    if((TimeUntilPPS <= 0))
     {
         pps_sps_len = h264enc_get_initial_bytestream_length(filter->enc);
         TimeUntilPPS = 60;
         DoPPS = true;
     }
         
-	if (filter->always_copy) {
-        gsize offset = 0;
-        
-		outbuf = gst_buffer_new_and_alloc(len0 + len1 + pps_sps_len);
-        
-        if(DoPPS == true)
-        {
-            gst_buffer_fill(outbuf, 0, h264enc_get_intial_bytestream_buffer(filter->enc), pps_sps_len);
-            offset += pps_sps_len;
-        }
-		gst_buffer_fill(outbuf, offset, h264enc_get_bytestream_buffer(filter->enc, 0), len0);
+    gsize offset = 0;
+    
+    outbuf = gst_buffer_new_and_alloc(len0 + len1 + pps_sps_len);
+    
+    if(len0)
+    {
+        gst_buffer_fill(outbuf, offset, h264enc_get_bytestream_buffer(filter->enc, 0), len0);
         offset += len0;
-        
-        if(len1 > 0)
-        {
-            gst_buffer_fill(outbuf, offset, h264enc_get_bytestream_buffer(filter->enc, 1), len1);
-        }
-        FrameTimes[FrameCTime ++] = GetNowUs();
-	} else {
-        gsize offset = 0;
-        printf("Nooooo this may not work!!!!\n");
-        if(h264enc_is_keyframe(filter->enc))
-        {
-            outbuf = gst_buffer_new_wrapped_full(0,
-                h264enc_get_intial_bytestream_buffer(filter->enc),
-                len0 + len1 + pps_sps_len, 0, pps_sps_len, 0, 0);
-                offset = pps_sps_len;
-            
-            gst_buffer_fill(outbuf, offset, h264enc_get_bytestream_buffer(filter->enc, 0), len0);
-            offset += len0;
-        }
-        else
-        {
-            outbuf = gst_buffer_new_wrapped_full(0,
-                h264enc_get_bytestream_buffer(filter->enc, 0),
-                len0 + len1, 0, len0, 0, 0);
-            offset = len0;
-        }
-        
-        if(len1 > 0)
-        {
-            gst_buffer_fill(outbuf, len0, h264enc_get_bytestream_buffer(filter->enc, 1), len1);
-        }
-	}
+    }
+    if(len1 > 0)
+    {
+        gst_buffer_fill(outbuf, offset, h264enc_get_bytestream_buffer(filter->enc, 1), len1);
+        offset += len1;
+    }
+    FrameTimes[FrameCTime ++] = GetNowUs();
+	
     h264enc_done_outputbuffer(filter->enc);
-    GstClock *clock = gst_element_get_clock (GST_ELEMENT (filter));
-    GstClockTime clock_time = gst_clock_get_time (clock);
+    
+    
+    if(DoPPS == true)
+    {
+        gst_buffer_fill(outbuf, offset, h264enc_get_intial_bytestream_buffer(filter->enc), pps_sps_len);
+        offset += pps_sps_len;
+    }
+    
     GST_BUFFER_TIMESTAMP(outbuf) = GST_CLOCK_DIFF (gst_element_get_base_time (GST_ELEMENT (filter)), clock_time);
 
     /*
@@ -570,27 +559,15 @@ gst_sunxisrc_start (GstBaseSrc * basesrc)
         printf("\n**********Starting new encoder************\n");
         src->width = WIDTH;
         src->height = HEIGHT;
-        src->bitrate = 10 * 1024;
-        src->keyframe_interval = 6;
-        src->always_copy = 1;
+        src->bitrate = H264Params.bitrate;
+        src->keyframe_interval = H264Params.keyframe_interval;
+        src->always_copy = true;
         src->fps_d = 1;
         src->fps_n = 60;
         
-		struct h264enc_params p = {
-			.width = src->width,
-			.height = src->height,
-			.src_width = src->width,
-			.src_height = src->height,
-			.profile_idc = 77,	// Main Profile
-			.level_idc = 41,
-			.qp = src->pic_init_qp,
-            .bitrate = src->bitrate,
-			.keyframe_interval = src->keyframe_interval
-		};
-
         src->duration = gst_util_uint64_scale_int (GST_SECOND, src->fps_d,
                         src->fps_n);
-		src->enc = h264enc_new(&p, NUM_BUFFERS);
+		src->enc = h264enc_new(&H264Params, NUM_BUFFERS);
         
 		if (!src->enc) {
 			GST_ERROR("Cannot initialize H.264 encoder");

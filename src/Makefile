@@ -135,7 +135,8 @@ am__DEPENDENCIES_1 =
 libgstsunxisrc_la_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_libgstsunxisrc_la_OBJECTS = libgstsunxisrc_la-gstsunxisrc.lo \
 	libgstsunxisrc_la-h264enc.lo \
-	libgstsunxisrc_la-AllwinnerV4L2.lo
+	libgstsunxisrc_la-AllwinnerV4L2.lo \
+	libgstsunxisrc_la-jsonload.lo
 libgstsunxisrc_la_OBJECTS = $(am_libgstsunxisrc_la_OBJECTS)
 AM_V_lt = $(am__v_lt_$(V))
 am__v_lt_ = $(am__v_lt_$(AM_DEFAULT_VERBOSITY))
@@ -162,7 +163,8 @@ depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
 am__depfiles_remade = ./$(DEPDIR)/libgstsunxisrc_la-AllwinnerV4L2.Plo \
 	./$(DEPDIR)/libgstsunxisrc_la-gstsunxisrc.Plo \
-	./$(DEPDIR)/libgstsunxisrc_la-h264enc.Plo
+	./$(DEPDIR)/libgstsunxisrc_la-h264enc.Plo \
+	./$(DEPDIR)/libgstsunxisrc_la-jsonload.Plo
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -218,7 +220,7 @@ AR = ar
 AUTOCONF = ${SHELL} '/usr/local/src/v3s/gst-plugin-sunxisrc/missing' autoconf
 AUTOHEADER = ${SHELL} '/usr/local/src/v3s/gst-plugin-sunxisrc/missing' autoheader
 AUTOMAKE = ${SHELL} '/usr/local/src/v3s/gst-plugin-sunxisrc/missing' automake-1.16
-AWK = mawk
+AWK = gawk
 CC = gcc
 CCDEPMODE = depmode=gcc3
 CFLAGS = -g -O2 -Wall
@@ -340,7 +342,7 @@ plugin_LTLIBRARIES = libgstsunxisrc.la
 
 # sources used to compile this plug-in
 libgstsunxisrc_la_SOURCES = gstsunxisrc.c gstsunxisrc.h \
-	h264enc.c h264enc.h AllwinnerV4L2.c AllwinnerV4L2.h 
+	h264enc.c h264enc.h AllwinnerV4L2.c jsonload.c jsonload.h AllwinnerV4L2.h jsmn.h
 
 
 # compiler and linker flags used to compile this plugin, set in configure.ac
@@ -432,6 +434,7 @@ distclean-compile:
 include ./$(DEPDIR)/libgstsunxisrc_la-AllwinnerV4L2.Plo # am--include-marker
 include ./$(DEPDIR)/libgstsunxisrc_la-gstsunxisrc.Plo # am--include-marker
 include ./$(DEPDIR)/libgstsunxisrc_la-h264enc.Plo # am--include-marker
+include ./$(DEPDIR)/libgstsunxisrc_la-jsonload.Plo # am--include-marker
 
 $(am__depfiles_remade):
 	@$(MKDIR_P) $(@D)
@@ -480,6 +483,13 @@ libgstsunxisrc_la-AllwinnerV4L2.lo: AllwinnerV4L2.c
 #	$(AM_V_CC)source='AllwinnerV4L2.c' object='libgstsunxisrc_la-AllwinnerV4L2.lo' libtool=yes \
 #	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) \
 #	$(AM_V_CC_no)$(LIBTOOL) $(AM_V_lt) --tag=CC $(libgstsunxisrc_la_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libgstsunxisrc_la_CFLAGS) $(CFLAGS) -c -o libgstsunxisrc_la-AllwinnerV4L2.lo `test -f 'AllwinnerV4L2.c' || echo '$(srcdir)/'`AllwinnerV4L2.c
+
+libgstsunxisrc_la-jsonload.lo: jsonload.c
+	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(libgstsunxisrc_la_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libgstsunxisrc_la_CFLAGS) $(CFLAGS) -MT libgstsunxisrc_la-jsonload.lo -MD -MP -MF $(DEPDIR)/libgstsunxisrc_la-jsonload.Tpo -c -o libgstsunxisrc_la-jsonload.lo `test -f 'jsonload.c' || echo '$(srcdir)/'`jsonload.c
+	$(AM_V_at)$(am__mv) $(DEPDIR)/libgstsunxisrc_la-jsonload.Tpo $(DEPDIR)/libgstsunxisrc_la-jsonload.Plo
+#	$(AM_V_CC)source='jsonload.c' object='libgstsunxisrc_la-jsonload.lo' libtool=yes \
+#	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) \
+#	$(AM_V_CC_no)$(LIBTOOL) $(AM_V_lt) --tag=CC $(libgstsunxisrc_la_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libgstsunxisrc_la_CFLAGS) $(CFLAGS) -c -o libgstsunxisrc_la-jsonload.lo `test -f 'jsonload.c' || echo '$(srcdir)/'`jsonload.c
 
 mostlyclean-libtool:
 	-rm -f *.lo
@@ -618,6 +628,7 @@ distclean: distclean-am
 		-rm -f ./$(DEPDIR)/libgstsunxisrc_la-AllwinnerV4L2.Plo
 	-rm -f ./$(DEPDIR)/libgstsunxisrc_la-gstsunxisrc.Plo
 	-rm -f ./$(DEPDIR)/libgstsunxisrc_la-h264enc.Plo
+	-rm -f ./$(DEPDIR)/libgstsunxisrc_la-jsonload.Plo
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-tags
@@ -666,6 +677,7 @@ maintainer-clean: maintainer-clean-am
 		-rm -f ./$(DEPDIR)/libgstsunxisrc_la-AllwinnerV4L2.Plo
 	-rm -f ./$(DEPDIR)/libgstsunxisrc_la-gstsunxisrc.Plo
 	-rm -f ./$(DEPDIR)/libgstsunxisrc_la-h264enc.Plo
+	-rm -f ./$(DEPDIR)/libgstsunxisrc_la-jsonload.Plo
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
 

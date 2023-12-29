@@ -211,7 +211,7 @@ AR = ar
 AUTOCONF = ${SHELL} '/usr/local/src/v3s/gst-plugin-sunxisrc/missing' autoconf
 AUTOHEADER = ${SHELL} '/usr/local/src/v3s/gst-plugin-sunxisrc/missing' autoheader
 AUTOMAKE = ${SHELL} '/usr/local/src/v3s/gst-plugin-sunxisrc/missing' automake-1.16
-AWK = mawk
+AWK = gawk
 CC = gcc
 CCDEPMODE = depmode=gcc3
 CFLAGS = -g -O2 -Wall
