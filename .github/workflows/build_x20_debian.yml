@@ -1,4 +1,4 @@
-name: build_package_rock5_debian
+name: build_package_x20
 
 on: 
   push:
@@ -36,8 +36,7 @@ jobs:
           echo $CLOUDSMITH_API_KEY > /opt/ChrootCompilationTest/additionalFiles/cloudsmith_api_key.txt
           echo "debian" > /opt/ChrootCompilationTest/additionalFiles/distro.txt
           echo "bullseye" > /opt/ChrootCompilationTest/additionalFiles/flavor.txt
-          echo "rk3566" /opt/ChrootCompilationTest/additionalFiles/board.txt
           cd /opt/ChrootCompilationTest/
           sudo apt update
           sudo bash install_dep.sh
-          sudo bash build.sh radxa-zero3w $API_KEY debian bullseye
+          sudo bash build.sh x20 $API_KEY debian bullseye
