@@ -7,7 +7,7 @@ curl -1sLf 'https://dl.cloudsmith.io/public/openhd/release/setup.deb.sh'| sudo -
 apt update
 sudo apt install -y git ruby-dev curl make cmake gcc g++ wget libdrm-dev mlocate openhd qopenhd-rk3566 apt-transport-https apt-utils open-hd-web-ui
 gem install fpm
-sudo configure
+sudo ./configure
 sudo make 
 sudo make install
 exit 1
