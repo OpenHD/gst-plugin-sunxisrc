@@ -28,11 +28,11 @@ jobs:
         uses: actions/checkout@v3
         with:
           submodules: recursive
-      - name: Building mpp in CHROOT
+      - name: Building gst-plugins in CHROOT
         run: |
           git clone https://github.com/OpenHD/ChrootCompilationTest /opt/ChrootCompilationTest
           mkdir -p /opt/ChrootCompilationTest/additionalFiles
-          git clone https://github.com/OpenHD/mpp /opt/ChrootCompilationTest/additionalFiles/ --recursive
+          git clone https://github.com/OpenHD/gst-plugin-sunxisrc /opt/ChrootCompilationTest/additionalFiles/ --recursive
           echo $CLOUDSMITH_API_KEY > /opt/ChrootCompilationTest/additionalFiles/cloudsmith_api_key.txt
           echo "debian" > /opt/ChrootCompilationTest/additionalFiles/distro.txt
           echo "bullseye" > /opt/ChrootCompilationTest/additionalFiles/flavor.txt
