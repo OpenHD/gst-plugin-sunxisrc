@@ -9,12 +9,11 @@ sudo apt install -y git automake ruby-dev curl make cmake gcc g++ wget libdrm-de
 gem install fpm
 sudo ./configure
 sudo make 
-sudo make install
-exit 1
-
-VERSION="1.1-$(date +'%m/%d/%Y')"
+mkdir -p sunxi
+sudo make install DESTDIR=sunxi
+VERSION="0.1-$(date +'%m/%d/%Y')"
 VERSION=$(echo "$VERSION" | sed 's/\//-/g')
-fpm -a arm64 -s dir -t deb -n mpp-rk3566 -v "$VERSION" -C mpp-package -p mpp-rk3566_VERSION_ARCH.deb
+fpm -a arm64 -s dir -t deb -n encode-sunxi -v "$VERSION" -C sunxi -p encode-sunxi_VERSION_ARCH.deb
 echo "push to cloudsmith"
 git describe --exact-match HEAD >/dev/null 2>&1
 echo "Pushing the package to OpenHD 2.3 repository"
