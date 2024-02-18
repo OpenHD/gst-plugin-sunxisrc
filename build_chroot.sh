@@ -9,8 +9,8 @@ sudo apt install -y git automake ruby-dev curl make cmake gcc g++ wget libdrm-de
 gem install fpm
 sudo ./configure
 sudo make 
-mkdir -p sunxi
-sudo make install DESTDIR=sunxi
+sudo mkdir -p /opt/sunxi
+sudo make install DESTDIR=/opt/sunxi
 VERSION="0.1-$(date +'%m/%d/%Y')"
 VERSION=$(echo "$VERSION" | sed 's/\//-/g')
 fpm -a arm64 -s dir -t deb -n encode-sunxi -v "$VERSION" -C sunxi -p encode-sunxi_VERSION_ARCH.deb
