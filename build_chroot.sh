@@ -13,7 +13,7 @@ sudo mkdir -p /opt/sunxi
 sudo make install DESTDIR=/opt/sunxi
 VERSION="0.1-$(date +'%m/%d/%Y')"
 VERSION=$(echo "$VERSION" | sed 's/\//-/g')
-fpm -a arm64 -s dir -t deb -n encode-sunxi -v "$VERSION" -C sunxi -p encode-sunxi_VERSION_ARCH.deb
+fpm -a arm64 -s dir -t deb -n encode-sunxi -v "$VERSION" -C /opt/sunxi -p encode-sunxi_VERSION_ARCH.deb
 echo "push to cloudsmith"
 git describe --exact-match HEAD >/dev/null 2>&1
 echo "Pushing the package to OpenHD 2.3 repository"
