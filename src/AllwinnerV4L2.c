@@ -13,6 +13,14 @@
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
+typedef enum
+{
+    CAM_INIT,
+    CAM_PAUSED,
+    CAM_STREAMING,
+    CAM_ERROR
+} CAM_STATE;
+
 struct buffer {
         void   *start;
         size_t  length;
@@ -26,6 +34,7 @@ static unsigned char **buffer_pointers = NULL;
 
 static struct v4l2_buffer CInputBuffer;
 static bool BufNeedsQueueing = false;
+static CAM_STATE CamState = CAM_INIT;
 
 
 static int xioctl(int fh, int request, void *arg)
@@ -85,10 +94,18 @@ static bool read_frame(uint8_t **Buf)
 void CamStopCapture(void)
 {
     enum v4l2_buf_type type;
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (-1 == xioctl(fd, VIDIOC_STREAMOFF, &type))
+    if(CAM_STREAMING == CamState)
     {
-         printf("%s() Error:VIDIOC_STREAMOFF \n", __func__);
+        type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        if (-1 == xioctl(fd, VIDIOC_STREAMOFF, &type))
+        {
+             printf("%s() Error:VIDIOC_STREAMOFF \n", __func__);
+        }
+        CamState = CAM_PAUSED;
+    }
+    else
+    {
+        printf("CamStopCapture() Camera not streaming\n");
     }
 }
 
@@ -96,39 +113,61 @@ bool CamStartCapture(void)
 {
     unsigned int i;
     enum v4l2_buf_type type;
-
-    for (i = 0; i < n_buffers; ++i) 
+    printf("CamStartCapture()\n");
+    
+    if(CAM_PAUSED == CamState)
     {
-        struct v4l2_buffer buf;
-
-        CLEAR(buf);
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_USERPTR;
-        buf.index = i;
-        buf.m.userptr = (unsigned long)buffers[i].start;
-        buf.length = buffers[i].length;
-        
-        if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
+        for (i = 0; i < n_buffers; ++i) 
         {
-            printf("%s() Error: VIDIOC_QBUF\n", __func__);
+            struct v4l2_buffer buf;
+
+            CLEAR(buf);
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            buf.memory = V4L2_MEMORY_USERPTR;
+            buf.index = i;
+            buf.m.userptr = (unsigned long)buffers[i].start;
+            //printf("Setting buffer to %p\n", buf.m.userptr);
+            buf.length = buffers[i].length;
+            
+            if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
+            {
+                printf("%s() Error: VIDIOC_QBUF\n", __func__);
+                return false;
+            }
+        }
+        BufNeedsQueueing = false;
+        type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        if (-1 == xioctl(fd, VIDIOC_STREAMON, &type))
+        {
+             printf("%s() Error: VIDIOC_STREAMON\n", __func__);
             return false;
         }
+        CamState= CAM_STREAMING;
+        return true;
     }
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (-1 == xioctl(fd, VIDIOC_STREAMON, &type))
+    else
     {
-         printf("%s() Error: VIDIOC_STREAMON\n", __func__);
+        printf("CamStartCapture() Camera not initialised\n");
         return false;
     }
-    return true;
 }
             
 
 static void uninit_camera(void)
-{
-    #if 0
-    unsigned int i;
+{ 
+    struct v4l2_requestbuffers req;
+    
+    CLEAR(req);
+    req.count  = 0;
+    req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory = V4L2_MEMORY_USERPTR;
 
+    if (-1 == xioctl(fd, VIDIOC_REQBUFS, &req)) 
+    {
+        printf("Could not free REQBUFS\n");
+    }
+#if 0
+    unsigned int i;
     for (i = 0; i < n_buffers; ++i)
     {
        if (-1 == munmap(buffers[i].start, buffers[i].length))
@@ -136,9 +175,17 @@ static void uninit_camera(void)
             printf("%s() Error: munmap\n", __func__);
         }
     }
+
     #endif
-    
-    free(buffers);
+    if(buffers)
+    {
+        free(buffers);
+        buffers = NULL;
+    }
+    n_buffers = 0;
+    buffer_pointers = NULL;
+
+    BufNeedsQueueing = false;
 }
 
 static bool init_userp(unsigned int buffer_size)
@@ -147,6 +194,9 @@ static bool init_userp(unsigned int buffer_size)
     
     CLEAR(req);
 
+
+    BufNeedsQueueing = false;
+    
     req.count  = n_buffers;
     req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     req.memory = V4L2_MEMORY_USERPTR;
@@ -196,7 +246,7 @@ static bool init_camera(int width, int height)
     struct v4l2_crop crop;
     struct v4l2_format fmt;
     unsigned int min;
-
+    printf("init_camera %dx%d\n", width, height);
     if (-1 == xioctl(fd, VIDIOC_QUERYCAP, &cap)) 
     {
         if (EINVAL == errno) 
@@ -305,6 +355,7 @@ static bool open_device(void)
     return true;
 }
 
+    
 bool CamReadFrame(uint8_t **Buf)
 {
     fd_set fds;
@@ -313,60 +364,92 @@ bool CamReadFrame(uint8_t **Buf)
     
     *Buf = NULL;
     
-    if(true == BufNeedsQueueing)
-    {        
-        if (-1 == xioctl(fd, VIDIOC_QBUF, &CInputBuffer))
+    if(CAM_STREAMING == CamState)
+    {
+        if(true == BufNeedsQueueing)
+        {        
+            if (-1 == xioctl(fd, VIDIOC_QBUF, &CInputBuffer))
+            {
+                printf("Error VIDIOC_QBUF\n");
+                return false;
+            }
+            BufNeedsQueueing = false;
+        }
+        
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+
+        /* Timeout. */
+        tv.tv_sec = 0;
+        tv.tv_usec = 100 * 1000;
+
+        r = select(fd + 1, &fds, NULL, NULL, &tv);
+
+        if ((-1 == r) && (EINTR != errno)) 
         {
-            printf("Error VIDIOC_QBUF");
+            printf("%s() Error: select\n", __func__);
             return false;
         }
-        BufNeedsQueueing = false;
+
+        if (0 == r) 
+        {
+            printf("%s() Error: select timeout\n", __func__);
+            return false;
+        }
+
+        return read_frame(Buf);
     }
-    
-    FD_ZERO(&fds);
-    FD_SET(fd, &fds);
-
-    /* Timeout. */
-    tv.tv_sec = 0;
-    tv.tv_usec = 100 * 1000;
-
-    r = select(fd + 1, &fds, NULL, NULL, &tv);
-
-    if ((-1 == r) && (EINTR != errno)) 
+    else
     {
-        printf("%s() Error: select\n", __func__);
+        printf("CamReadFrame() Camera not streaming\n");
         return false;
     }
-
-    if (0 == r) 
-    {
-        printf("%s() Error: select timeout\n", __func__);
-        return false;
-    }
-
-    return read_frame(Buf);
 }
-        
+    
 void CamClose(void)
 {
-    uninit_camera();
-    close_device();
+    if(CAM_STREAMING == CamState)
+    {
+        CamStopCapture();
+    }
+    if((CAM_STREAMING == CamState) || (CAM_PAUSED == CamState))
+    {
+        uninit_camera();
+        close_device();
+        CamState = CAM_INIT;
+    }
+    else
+    {
+        printf("CamClose() Camera wasn't opened\n");
+    }
 }
 
 bool CamOpen(unsigned int width, unsigned int height, unsigned char **inbuf_pointers, int in_buffers)
 {
     printf("%s()\n", __func__);
-    buffer_pointers = inbuf_pointers;
-    n_buffers = in_buffers;
-    if(!open_device())
+    if(CAM_INIT == CamState)
     {
-        printf("%s() Could not open device\n", __func__);
-		return false;
+        buffer_pointers = inbuf_pointers;
+        n_buffers = in_buffers;
+        if(CAM_INIT == CamState)
+        {
+            if(!open_device())
+            {
+                printf("%s() Could not open device\n", __func__);
+                return false;
+            }
+            if(!init_camera(width, height))
+            {
+                printf("%s() Could not init device\n", __func__);
+                return false;
+            }
+            CamState = CAM_PAUSED;
+        }
     }
-    if(!init_camera(width, height))
+    else
     {
-        printf("%s() Could not init device\n", __func__);
-		return false;
+        printf("CamOpen() Camera already opened\n");
+        return false;
     }
     printf("%s(): Camera opened succesfully\n", __func__);
     return true;

@@ -49,6 +49,8 @@
      "sH264Smart.smart_fun_en": 0,
      "sH264Smart.img_bin_en": 0,
      "sH264Smart.img_bin_th": 0,
-     "sH264Smart.shift_bits": 0
+     "sH264Smart.shift_bits": 0,
+     "ParamSliceHeight": 180,
+     "FastEnc":1
     }
 }

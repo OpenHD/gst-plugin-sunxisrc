@@ -78,7 +78,7 @@ uint32_t MaxFrameTimes[NUM_TIME_STEPS] = {0};
 uint32_t FrameNum[NUM_FRAMERATE_TIMES] = {0};
 uint32_t FramerateTimes[NUM_FRAMERATE_TIMES] = {0};
 uint32_t EncTimes[NUM_FRAMERATE_TIMES] = {0};
-
+static bool InitDone = false;
 long long GetNowUs()
 {
     struct timeval now;
@@ -95,22 +95,6 @@ enum
 	PROP_ALWAYS_COPY
 };
 
-/* the capabilities of the inputs and outputs.
- *
- * describe the real formats here.
- 
-static GstStaticPadTemplate sink_factory = GST_STATIC_PAD_TEMPLATE("sink",
-	GST_PAD_SINK,
-	GST_PAD_ALWAYS,
-	GST_STATIC_CAPS (
-		"video/x-raw, "
-		"format = (string) NV12, "
-		"width = (int) [16,1280], "
-		"height = (int) [16,720], "
-		"framerate = (fraction) [0/1, MAX] "
-	)
-);
-*/
 
 static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE("src",
 	GST_PAD_SRC,
@@ -118,8 +102,8 @@ static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE("src",
     GST_STATIC_CAPS ("video/x-h264, "
         "framerate = (fraction) [0/1, MAX], "
         "width = (int) [ 1, MAX ], " "height = (int) [ 1, MAX ], "
-        "stream-format = (string) byte-stream, "
-        "alignment = (string) au, "
+        "stream-format = (string) bytestream, "
+        "alignment = (string) nal, "
         "profile = (string) { high, main, baseline,  }")
     );
 
@@ -360,7 +344,7 @@ static gboolean gst_sunxisrc_set_caps(GstBaseSrc * bsrc, GstCaps * caps)
  */
 static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
 {
-    static int32_t TimeUntilPPS = 2;
+    static int32_t TimeUntilPPS = 1;
 	GstSunxiSrc *filter;
 	GstBuffer *outbuf = NULL;
 	gsize len0, len1;
@@ -423,6 +407,13 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
     
     outbuf = gst_buffer_new_and_alloc(len0 + len1 + pps_sps_len);
     
+
+    if(DoPPS == true)
+    {
+        gst_buffer_fill(outbuf, offset, h264enc_get_intial_bytestream_buffer(filter->enc), pps_sps_len);
+        offset += pps_sps_len;
+    }
+
     if(len0)
     {
         gst_buffer_fill(outbuf, offset, h264enc_get_bytestream_buffer(filter->enc, 0), len0);
@@ -436,13 +427,6 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
     FrameTimes[FrameCTime ++] = GetNowUs();
 	
     h264enc_done_outputbuffer(filter->enc);
-    
-    
-    if(DoPPS == true)
-    {
-        gst_buffer_fill(outbuf, offset, h264enc_get_intial_bytestream_buffer(filter->enc), pps_sps_len);
-        offset += pps_sps_len;
-    }
     
     GST_BUFFER_TIMESTAMP(outbuf) = GST_CLOCK_DIFF (gst_element_get_base_time (GST_ELEMENT (filter)), clock_time);
 
@@ -473,9 +457,8 @@ static GstFlowReturn gst_sunxisrc_create(GstPushSrc * psrc, GstBuffer **buf)
         static unsigned int MaxTimeSinceLastFrame =  0;
         static int Periodic = 0;
         static unsigned int FrameCount = 0;
-        static int FramerateTimeCount = 0;
-        static FILE *fp=NULL;
-        
+        //static int FramerateTimeCount = 0;
+    
         FrameCount ++;
         unsigned int EncTime = FrameTimes[3] - FrameTimes[2];
         unsigned int TotTime = FrameTimes[6] - FrameTimes[0];
@@ -554,33 +537,41 @@ gst_sunxisrc_start (GstBaseSrc * basesrc)
     GstSunxiSrc *src = GST_SUNXISRC(GST_OBJECT_PARENT(basesrc));
     GST_LOG_OBJECT(src, "Creating SunxiSrc pipeline");
     printf("Entering %s\n",  __func__);
+
+    src->width = WIDTH;
+    src->height = HEIGHT;
     
-    if (!src->enc) {
-        printf("\n**********Starting new encoder************\n");
-        src->width = WIDTH;
-        src->height = HEIGHT;
-        src->bitrate = H264Params.bitrate;
-        src->keyframe_interval = H264Params.keyframe_interval;
-        src->always_copy = true;
-        src->fps_d = 1;
-        src->fps_n = 60;
-        
-        src->duration = gst_util_uint64_scale_int (GST_SECOND, src->fps_d,
-                        src->fps_n);
-		src->enc = h264enc_new(&H264Params, NUM_BUFFERS);
-        
-		if (!src->enc) {
-			GST_ERROR("Cannot initialize H.264 encoder");
-			return GST_FLOW_ERROR;
-		}
-	}
-    
-    /* V4l2 init */
-    if(!CamOpen(src->width, src->height, h264_get_buffers(src->enc), NUM_BUFFERS))
+    if(!InitDone)
     {
-        printf("Cannot open camera, fail\n");
-        return FALSE;
-    }
+        
+        if (!src->enc) {
+            printf("\n**********Starting new encoder************\n");
+            src->width = WIDTH;
+            src->height = HEIGHT;
+            src->bitrate = H264Params.bitrate;
+            src->keyframe_interval = H264Params.keyframe_interval;
+            src->always_copy = true;
+            src->fps_d = 1;
+            src->fps_n = 60;
+            
+            src->duration = gst_util_uint64_scale_int (GST_SECOND, src->fps_d,
+                            src->fps_n);
+            src->enc = h264enc_new(&H264Params, NUM_BUFFERS);
+            
+            if (!src->enc) {
+                GST_ERROR("Cannot initialize H.264 encoder");
+                return GST_FLOW_ERROR;
+            }
+        }
+        InitDone = true;
+    }    
+        printf("gst_sunxisrc_start(): w %d, h %d\n",  src->width,  src->height);
+        /* V4l2 init */
+        if(!CamOpen(src->width, src->height, h264_get_buffers(src->enc), NUM_BUFFERS))
+        {
+            printf("Cannot open camera, fail\n");
+            return FALSE;
+        }
     
     /* Some GST structrs to be filled out */
     gst_video_info_init(&src->info);
@@ -590,6 +581,7 @@ gst_sunxisrc_start (GstBaseSrc * basesrc)
     gst_base_src_start_complete(basesrc, GST_FLOW_OK);
     
     filt = src;
+        
     printf("Done %s\n",  __func__);
     return TRUE;
 }
@@ -615,9 +607,12 @@ static GstStateChangeReturn gst_sunxisrc_change_state(GstElement *element, GstSt
     printf("Entering %s\n",  __func__);
 	switch (transition) {
 	case GST_STATE_CHANGE_NULL_TO_READY:
+        printf("GST_STATE_CHANGE_NULL_TO_READY\n");
 		break;
 
 	case GST_STATE_CHANGE_READY_TO_PAUSED:
+        printf("Stopping camera capture\n");
+        CamStopCapture();
 		break;
 
 	case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
@@ -629,31 +624,18 @@ static GstStateChangeReturn gst_sunxisrc_change_state(GstElement *element, GstSt
 		break;
 
 	default:
+        
+        //printf("GST_STATE_CHANGE unhandled %d\n", transition);
 		// silence compiler warning...
 		break;
 	}
 
 	ret = GST_ELEMENT_CLASS(gst_sunxisrc_parent_class)->change_state(element, transition);
 	if (ret == GST_STATE_CHANGE_FAILURE)
+    {
+        printf("Could not change state\n");
 		return ret;
-
-	switch (transition) {
-	case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
-        CamStopCapture();
-		break;
-
-	case GST_STATE_CHANGE_PAUSED_TO_READY:
-		h264enc_free(filter->enc);
-		filter->enc = NULL;
-		break;
-
-	case GST_STATE_CHANGE_READY_TO_NULL:
-		break;
-
-	default:
-		// silence compiler warning...
-		break;
-	}
+    }
     printf("Done %s\n",  __func__);
 	return ret;
 }
