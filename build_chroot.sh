@@ -11,8 +11,9 @@ sudo ./configure
 sudo make 
 sudo mkdir -p /opt/sunxi
 sudo make install DESTDIR=/opt/sunxi
-VERSION="0.1-$(date +'%m/%d/%Y')"
+VERSION="0.2-$(date +'%m/%d/%Y')"
 VERSION=$(echo "$VERSION" | sed 's/\//-/g')
+mv /opt/sunxi/usr/local/lib /opt/sunxi/usr/lib
 fpm -a armhf -s dir -t deb -n encode-sunxi -v "$VERSION" -C /opt/sunxi -p encode-sunxi_VERSION_ARCH.deb
 echo "push to cloudsmith"
 git describe --exact-match HEAD >/dev/null 2>&1
